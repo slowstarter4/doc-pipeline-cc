@@ -130,3 +130,17 @@ Windows WinNAT 예약범위라 막힘). **오케스트레이터도 서브에이�
 
 - **2026-07-28**: 레포 뼈대 생성, 결정적 스크립트 3개(schema_ddl/openapi_spec/
   endpoint_groups) 포팅 + 자기점검 통과, db/design/examples 이식, 이 CLAUDE.md 작성.
+- **2026-07-28 (이어서)**: **전체 스캐폴드 완성.** `gen-docs`(원본 기획문서 동봉
+  규칙 포함), `gen-backend-spring`(+`backend-slice-writer` 에이전트+gotchas.md,
+  commerce_qwen_plan.md로 실측 검증 - 도메인 10조각 병렬 디스패치, 컴파일 첫
+  시도 성공, verify-backend가 진짜 SQL 버그 2건 잡아 재디스패치로 고침),
+  `gen-backend-fastapi`/`express`/`typescript`(+각 gotchas.md, 미검증 - spring
+  패턴 이식), `gen-frontend-vanilla`/`react`/`react-ts`, `verify-backend`/
+  `verify-frontend` 스킬, `scripts/verify_backend.py`·`verify_frontend.py`·
+  `gen_fastapi_scaffold.py`·`gen_express_scaffold.py` 전부 작성 + 자기점검 통과.
+  마지막으로 `build-app` 오케스트레이터 스킬로 전체를 하나의 진입점(`/build-app
+  <plan.md>`)으로 묶었다.
+  **다음에 할 것**: express/typescript/vanilla/react/react-ts를 실제
+  commerce_qwen_plan.md로 end-to-end 검증(spring만 해봤다) - 걸리는 버그는
+  해당 gotchas.md에 승격. `build-app` 스킬 자체도 아직 처음부터 끝까지
+  한 번에 돌려본 적은 없다(부분부분 스킬 단위로만 검증함).

@@ -1,0 +1,102 @@
+---
+name: build-app
+description: 기획문서(.md) 하나로 요구사항~API명세 문서화부터 백엔드·프론트 코드 생성·검증까지 전체 파이프라인을 돌리는 최상위 오케스트레이터. "이 기획문서로 앱 만들어줘", "/build-app <경로>" 같은 요청에 사용. doc-pipeline-cc 레포 안에서만 동작한다(다른 스킬이 참조하는 서브에이전트 정의가 이 레포 기준이라, Claude Code 세션을 이 레포 폴더에서 시작해야 한다).
+---
+
+# build-app: 기획문서 → 검증된 백엔드+프론트
+
+이 스킬을 따르는 세션(너 자신)이 오케스트레이터다. 문서 생성은 직접 Write로,
+코드 생성은 도메인 조각당 서브에이전트를 병렬 디스패치해서 한다. **어떤
+단계도 LangGraph 같은 별도 상태 기계가 없다** - 이 대화 자체가 상태이고,
+사람에게 물을 게 있으면 그냥 물어본다(대화 턴이 곧 멈춤/재개).
+
+## 0. 입력 확인
+
+인자로 기획문서 경로를 받는다(예: `examples/commerce_qwen_plan.md`). 없으면
+사람에게 묻는다. 그 다음 스택 선택을 AskUserQuestion으로 확인한다:
+- **BACKEND_TARGET**: fastapi / spring / express / typescript
+- **FRONTEND_TARGET**: vanilla / react / react-ts
+- **DB_TARGET**: sqlite / postgres
+
+`.claude/skills/gen-backend-*`/`gen-frontend-*` 폴더가 곧 등록된 스택 목록이다
+(스택이 늘면 폴더가 늘 뿐, 이 스킬은 안 바뀐다).
+
+postgres를 골랐으면 사람에게 `cd db && docker compose up -d`를 직접 하라고
+안내한다(이 스킬은 도커를 자동 기동하지 않는다).
+
+## 1. 문서 생성 - `gen-docs` 스킬
+
+`gen-docs` 스킬을 따라 순서대로 쓴다:
+`generated/docs/requirements.md` → `screen_design.md` → `data_model.json` →
+`api_spec.json` → (스크립트로) `openapi.json`, `schema.sql`(`--dialect`는
+DB_TARGET).
+
+**핵심 규칙: 매 단계 원본 기획문서를 다시 Read한다** - 직전 산출물 요약본만
+보고 원본을 놓치는 구조를 만들지 않는다(`gen-docs` 스킬에 상세 이유 있음).
+
+`gen-docs` 6단계(자기 검토)에서 이슈가 나오면, 판단이 애매한 것만 AskUserQuestion
+으로 사람에게 물어보고 진행 여부를 정한다 - 명백한 건 그 자리에서 고친다.
+
+## 2. 백엔드 + 프론트 생성 (병렬)
+
+**같은 메시지에 두 갈래를 동시에 진행한다** - 백엔드와 프론트는 `api_spec.json`
+만 공유하고 서로를 안 본다(계약 공유형, 협상 없음):
+
+- 백엔드: `.claude/skills/gen-backend-<BACKEND_TARGET>/SKILL.md`를 따른다.
+  이 안에서 다시 도메인 조각별 서브에이전트를 병렬 디스패치한다(중첩 병렬).
+- 프론트: `.claude/skills/gen-frontend-<FRONTEND_TARGET>/SKILL.md`를 따른다.
+  서브에이전트 1개.
+
+둘 다 `generated/docs/api_spec.json`만 근거로 삼는다. 프론트는 추가로
+`screen_design.md`(레이아웃 참고, 계약 아님)를 본다.
+
+## 3. 검증 + 자기 수정 루프
+
+### 백엔드
+```bash
+python scripts/verify_backend.py --target <BACKEND_TARGET> --db <DB_TARGET> \
+  --api-spec generated/docs/api_spec.json
+```
+실패하면 `verify-backend` 스킬의 지시대로 **원인이 속한 도메인 조각만**
+재디스패치(실패 로그를 `[이전 시도 실패 로그]`로 프롬프트에 포함). 재검증.
+**같은 조각이 3회 실패하면 사람에게 로그를 보여주고 멈춘다.** 시도 횟수는
+TaskCreate/TaskUpdate로 조각별로 추적한다(예: task subject
+"backend-orders-retry", 실패마다 코멘트에 시도 번호 기록).
+
+### 프론트
+```bash
+python scripts/verify_frontend.py --api-spec generated/docs/api_spec.json
+```
+실패하면 `verify-frontend` 스킬대로 전체 재디스패치(3회 상한, 조각화 없음).
+
+## 4. 완료 보고
+
+사람에게 알려줄 것:
+- 문서 위치(`generated/docs/`), 백엔드/프론트 위치(`generated/backend`,
+  `generated/frontend`)
+- 백엔드 실행 명령(스택별로 다름 - `verify-backend` 스킬의 LaunchSpec 참고:
+  fastapi=`uvicorn main:app --port 8000`, spring=`./gradlew bootRun`,
+  express=`npm install && node server.js`(sqlite면 `--experimental-sqlite`
+  플래그), typescript=`npm install && npm run build && node dist/server.js`)
+- 프론트 실행 명령: `cd generated/frontend && npm install && npm run dev`
+  (vanilla는 index.html을 브라우저로 바로 열기)
+- postgres면 도커가 떠 있어야 한다는 점 재확인
+- 검증 결과 요약(스모크·계약·영속성 통과 여부, 남은 note)
+
+**여기까지는 자동 검증(스모크+계약+영속성)이고, 브라우저로 실제 열어서 확인은
+사람 몫이다** - doc-pipeline과 같은 판단(여러 스택 자동 기동은 안 함).
+
+## 재시도 상한과 사람 에스컬레이션
+
+- 백엔드 조각·프론트 전체 모두 **3회** 상한.
+- 상한 도달 시: 실패 로그 전문을 보여주고, 계속할지/다른 스택으로 바꿀지/
+  수동으로 고칠지 AskUserQuestion으로 묻는다. 조용히 포기하거나 무한 재시도
+  하지 않는다.
+
+## 알려진 제약
+
+- 프론트는 도메인 조각화가 없다(화면 간 공유 상태·네비게이션 때문에 한 파일
+  세트로 일관되게 쓰는 게 맞다고 판단). 실패 시 전체 재생성.
+- express/typescript 백엔드는 아직 spring만큼 실전 검증되지 않았다(spring만
+  commerce_qwen_plan으로 end-to-end 검증됨) - 새로 걸리는 버그는 해당
+  `gen-backend-*/references/gotchas.md`에 승격시켜 나간다.
