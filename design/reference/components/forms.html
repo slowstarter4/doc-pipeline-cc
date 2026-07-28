@@ -1,0 +1,22 @@
+<!-- @dsCard group="Components" -->
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>입력·폼</title>
+<link rel="stylesheet" href="_tokens.css"></head>
+<body><div class="preview-wrap">
+  <div class="preview-label">입력 필드 — 기본 / 포커스 / 에러</div>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+    <div class="field">
+      <label>제목</label>
+      <input class="input" placeholder="예: 클린 코드">
+      <span class="help">책의 제목을 입력하세요.</span>
+    </div>
+    <div class="field">
+      <label>ISBN</label>
+      <input class="input error" value="123">
+      <span class="help error">ISBN은 숫자 13자리여야 합니다.</span>
+    </div>
+  </div>
+  <div style="display:flex; justify-content:flex-end;">
+    <button class="btn btn-primary">추가</button>
+  </div>
+</div></body></html>

@@ -1,0 +1,21 @@
+# Postgres 검증용 컨테이너. 오케스트레이터가 자동 기동하지 않는다 - 사람이 `docker compose up -d`로
+# 띄우고, 생성된 백엔드는 DATABASE_URL로 붙기만 한다. 자격증명은 로컬 개발 고정값이라
+# 스킬 프롬프트에 그대로 박는다.
+#
+# DATABASE_URL 규약(생성 백엔드가 읽는 표준): postgresql://doc:doc@localhost:55432/doc
+# 호스트 포트 55432: 5432·5433 모두 Windows WinNAT 예약 범위(5346-5445 등)라 bind가
+# 막힌다(리스너는 없는데도). 컨테이너 내부는 5432 그대로, 호스트만 55432로 매핑한다.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: doc
+      POSTGRES_PASSWORD: doc
+      POSTGRES_DB: doc
+    ports:
+      - "55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

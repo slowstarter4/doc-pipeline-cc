@@ -1,0 +1,15 @@
+generated/
+__pycache__/
+*.pyc
+.DS_Store
+
+# 검증용 로컬 산출물
+.schemathesis/
+
+# 에디터
+.vscode/
+.idea/
+
+# Claude Code 로컬 설정
+.claude/settings.local.json
+.claude/*.tmp.*
