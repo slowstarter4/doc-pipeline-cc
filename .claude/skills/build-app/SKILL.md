@@ -24,12 +24,26 @@ description: 기획문서(.md) 하나로 요구사항~API명세 문서화부터 
 postgres를 골랐으면 사람에게 `cd db && docker compose up -d`를 직접 하라고
 안내한다(이 스킬은 도커를 자동 기동하지 않는다).
 
+**재실행 감지(스택 바꿔 다시 돌릴 때 필수)**: `generated/backend`,
+`generated/frontend`가 이미 있으면(이전 실행 산출물) 겹쳐쓰기 전에
+`generated/backend_<이전BACKEND_TARGET>/`, `generated/frontend_<이전
+FRONTEND_TARGET>/`로 `mv`해서 백업한다 - 이전 스택명을 모르면 남아있는
+파일(예: `main.py`면 fastapi, `server.ts`면 typescript)로 추정한다.
+`generated/docs/schema.sql`도 이전 실행이 다른 DB_TARGET으로 만든 것일 수
+있다 - dialect 확인 없이 그냥 쓰지 말고 `python scripts/schema_ddl.py
+generated/docs/data_model.json --dialect <DB_TARGET> -o
+generated/docs/schema.sql`로 **항상 이번 DB_TARGET 기준으로 재생성**한다
+(빠르고 결정적이라 매번 다시 뽑아도 손해 없음 - postgres SERIAL vs sqlite
+INTEGER AUTOINCREMENT처럼 dialect별로 문법이 달라 재사용하면 컴파일/기동
+단계에서야 발견되는 에러로 이어진다, 실측: 2026-07-29 fastapi/sqlite
+세션에서 실제로 겪음).
+
 ## 1. 문서 생성 - `gen-docs` 스킬
 
 `gen-docs` 스킬을 따라 순서대로 쓴다:
 `generated/docs/requirements.md` → `screen_design.md` → `data_model.json` →
 `api_spec.json` → (스크립트로) `openapi.json`, `schema.sql`(`--dialect`는
-DB_TARGET).
+DB_TARGET - 재실행이면 위 재생성 스텝과 같은 것, 여기선 최초 생성).
 
 **핵심 규칙: 매 단계 원본 기획문서를 다시 Read한다** - 직전 산출물 요약본만
 보고 원본을 놓치는 구조를 만들지 않는다(`gen-docs` 스킬에 상세 이유 있음).
@@ -79,9 +93,15 @@ python scripts/verify_frontend.py --api-spec generated/docs/api_spec.json
   express=`npm install && node server.js`(sqlite면 `--experimental-sqlite`
   플래그), typescript=`npm install && npm run build && node dist/server.js`)
 - 프론트 실행 명령: `cd generated/frontend && npm install && npm run dev`
-  (vanilla는 index.html을 브라우저로 바로 열기)
+  (vanilla는 index.html을 브라우저로 바로 열기 - 단 claude-in-chrome
+  같은 브라우저 자동화 도구로 열 때는 확장이 `file://`을 막으므로
+  `python -m http.server <포트>`로 띄운 뒤 `http://localhost:<포트>/
+  index.html`로 열어야 한다)
 - postgres면 도커가 떠 있어야 한다는 점 재확인
-- 검증 결과 요약(스모크·계약·영속성 통과 여부, 남은 note)
+- 검증 결과 요약(스모크·계약·영속성 통과 여부, 남은 note) - **스모크는
+  대부분 "잘못된 데이터 거부" 케이스 위주라 재고 미시딩처럼 정상 플로우를
+  막는 문제는 못 잡는다.** 브라우저로 실제 확인할 때 주문 생성 등이 막히면
+  먼저 `Stock` 같은 선행 테이블에 테스트 로우가 있는지 확인한다.
 
 **여기까지는 자동 검증(스모크+계약+영속성)이고, 브라우저로 실제 열어서 확인은
 사람 몫이다** - doc-pipeline과 같은 판단(여러 스택 자동 기동은 안 함).
