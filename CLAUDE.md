@@ -319,3 +319,21 @@ Windows WinNAT 예약범위라 막힘). **오케스트레이터도 서브에이�
   (`verify_backend.py --target express --db sqlite`, happyPath POST /books
   201 확인). 이걸로 4스택×happyPath 매트릭스가 다 채워졌다 - 앞으로 새
   도메인/스택 조합을 시험할 때 happyPath 관련 미검증 스택 걱정은 없다.
+- **2026-07-29 (이어서 7)**: **이전 산출물 백업을 스크립트로 자동화**
+  (`scripts/backup_generated.py` 신설). 그동안 `build-app` 스킬은 "재실행이면
+  백업해라"는 지시문만 갖고 있었고, 실제 `mv`는 오케스트레이터가 매번 손으로
+  짰다 - 그 수동 과정에서 실제로 사고가 났다(2026-07-29: `mv`로 옮겨둔
+  react-ts 프론트를 백업본으로 착각해 `rm -rf`로 삭제). 이제 스크립트가
+  `generated/backend`·`frontend`·`docs`를 스택/dialect 자동 감지해
+  `<name>_<태그>_<타임스탬프>/`로 옮긴다(backend: build.gradle→spring,
+  tsconfig/server.ts→typescript, main.py→fastapi, server.js→express /
+  frontend: package.json 없으면 vanilla, tsconfig 있으면 react-ts, 아니면
+  react / docs: schema.sql의 `SERIAL PRIMARY KEY`→postgres,
+  `AUTOINCREMENT`→sqlite). 이름 규칙이 항상 같아서 "이게 백업본인가
+  작업본인가" 혼동 자체가 없어진다. 비어있거나 없으면 아무것도 안 하므로
+  첫 실행에 그냥 돌려도 무해 - `build-app` 0단계에서 무조건 먼저 호출한다.
+  self-check로 3개 감지기 전 분기 + 빈 폴더 무시 + 원본 자리 비워짐까지 검사.
+  **다음에 할 것**: 백엔드×프론트 조합을 바꿔가며 더 돌려보기 - 지금까지
+  검증한 조합이 스택별로 1회씩이라, 조합을 섞으면(예: fastapi+react,
+  spring+vanilla) 아직 안 드러난 계약·포트·에러키 불일치가 나올 수 있다.
+  이 과정 자체가 새로 만든 `backup_generated.py`의 실사용 검증도 된다.

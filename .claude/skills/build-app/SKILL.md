@@ -30,19 +30,31 @@ description: 기획문서(.md) 하나로 요구사항~API명세 문서화부터 
 postgres를 골랐으면 사람에게 `cd db && docker compose up -d`를 직접 하라고
 안내한다(이 스킬은 도커를 자동 기동하지 않는다).
 
-**재실행 감지(스택 바꿔 다시 돌릴 때 필수)**: `generated/backend`,
-`generated/frontend`가 이미 있으면(이전 실행 산출물) 겹쳐쓰기 전에
-`generated/backend_<이전BACKEND_TARGET>/`, `generated/frontend_<이전
-FRONTEND_TARGET>/`로 `mv`해서 백업한다 - 이전 스택명을 모르면 남아있는
-파일(예: `main.py`면 fastapi, `server.ts`면 typescript)로 추정한다.
-`generated/docs/schema.sql`도 이전 실행이 다른 DB_TARGET으로 만든 것일 수
-있다 - dialect 확인 없이 그냥 쓰지 말고 `python scripts/schema_ddl.py
-generated/docs/data_model.json --dialect <DB_TARGET> -o
-generated/docs/schema.sql`로 **항상 이번 DB_TARGET 기준으로 재생성**한다
-(빠르고 결정적이라 매번 다시 뽑아도 손해 없음 - postgres SERIAL vs sqlite
-INTEGER AUTOINCREMENT처럼 dialect별로 문법이 달라 재사용하면 컴파일/기동
-단계에서야 발견되는 에러로 이어진다, 실측: 2026-07-29 fastapi/sqlite
-세션에서 실제로 겪음).
+**이전 산출물 백업 (스택·도메인 바꿔 재실행할 때 필수)**: 문서 생성으로
+넘어가기 전에 **항상** 이 스크립트를 먼저 돌린다 - 손으로 `mv`를 짜지 않는다:
+
+```bash
+python scripts/backup_generated.py
+```
+
+`generated/backend`·`frontend`·`docs`가 이미 있으면 스택을 자동 감지해
+`generated/backend_<스택>_<타임스탬프>/` 식으로 옮긴다(비어 있거나 없으면
+아무것도 안 하므로 첫 실행에 그냥 돌려도 무해하다). **직접 `mv`로 백업하지
+말 것** - 손으로 옮기면 나중에 그게 백업본인지 작업본인지 헷갈려서 지우는
+사고가 난다(실측: 2026-07-29 세션에서 `mv`해둔 react-ts 프론트를 백업인 줄
+알고 `rm -rf`로 날림). 스크립트는 이름 규칙이 항상 같아서 그 혼동이 없다.
+
+**`schema.sql`은 항상 이번 DB_TARGET으로 재생성한다**(gen-docs 5단계에서
+어차피 만들지만, 문서를 재사용하는 경우엔 이 단계에서 다시 뽑아야 한다):
+
+```bash
+python scripts/schema_ddl.py generated/docs/data_model.json \
+  --dialect <DB_TARGET> -o generated/docs/schema.sql
+```
+빠르고 결정적이라 매번 다시 뽑아도 손해 없다 - postgres SERIAL vs sqlite
+INTEGER AUTOINCREMENT처럼 dialect별로 문법이 달라, 이전 dialect 산출물을
+그대로 재사용하면 컴파일/기동 단계에서야 발견되는 에러로 이어진다(실측:
+2026-07-29 fastapi/sqlite 세션에서 실제로 겪음).
 
 ## 1. 문서 생성 - `gen-docs` 스킬
 
