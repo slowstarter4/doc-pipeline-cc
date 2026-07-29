@@ -12,8 +12,14 @@ description: 기획문서(.md) 하나로 요구사항~API명세 문서화부터 
 
 ## 0. 입력 확인
 
-인자로 기획문서 경로를 받는다(예: `examples/commerce_qwen_plan.md`). 없으면
-사람에게 묻는다. 그 다음 스택 선택을 AskUserQuestion으로 확인한다:
+인자로 기획문서 경로를 받는다(예: `examples/commerce_qwen_plan.md`). 없거나,
+줬는데 실제로 그 파일이 없으면(오타든 신규 도메인이든) - 사람에게 완성된
+문서를 새로 줄 건지 물어보지 말고 곧장 **`plan-intake` 스킬**을 따라 질의
+응답으로 기획 초안을 새로 잡는다(6개 고정 질문 → 조립 → 최종승인 →
+`examples/<파일명>.md` 저장). 그 스킬이 끝나면 나온 경로를 `plan_doc` 원본
+경로로 삼아 아래를 이어간다.
+
+그 다음 스택 선택을 AskUserQuestion으로 확인한다:
 - **BACKEND_TARGET**: fastapi / spring / express / typescript
 - **FRONTEND_TARGET**: vanilla / react / react-ts
 - **DB_TARGET**: sqlite / postgres

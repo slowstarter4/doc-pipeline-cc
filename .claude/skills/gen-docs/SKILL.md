@@ -145,6 +145,92 @@ python scripts/schema_ddl.py generated/docs/data_model.json \
 `--dialect`는 `build-app`이 사용자에게 물어본 DB_TARGET(`sqlite`|`postgres`)을
 그대로 전달한다.
 
+### 5.5. happyPath fixture 작성 (`api_spec.json`에 Edit로 추가)
+
+**왜 필요한가**: `verify-backend`의 스모크 테스트는 더미 데이터(문자열
+"테스트", 숫자 1 등)로 생성 엔드포인트를 찔러본다. 더미 값은 재고·쿠폰 같은
+선행 데이터를 가리키는 FK가 실제로 존재할 리 없어서, 정상적인 구현이라도
+거부(4xx)하는 게 맞다 - 그래서 스모크는 그 거부를 "도메인 규칙일 수 있음"으로
+봐주고 실패로 안 친다. 문제는 그러면 **"정상적인 값을 넣었을 때 진짜로
+성공하는가"가 아예 검증이 안 된다**는 것 - 재고 시딩 자체를 깜빡한 버그도
+이 구멍으로 통과해버린다(실측: 2026-07-29 fastapi/sqlite, typescript/postgres
+세션 둘 다 브라우저 수동 확인에서 Stock 미시딩으로 주문이 막힌 걸 뒤늦게
+발견). happyPath fixture는 "이 값을 이 순서로 넣으면 실제로 통과해야 한다"는
+ground truth를 명세에 박아서, `verify-backend`가 더미 대신 이걸로 진짜 성공
+케이스를 확인하게 한다.
+
+**대상**: 4단계에서 쓴 `endpoints` 중 **request body가 있는 첫 번째 POST**
+하나만 고른다(`{`가 path에 없는 것 - `verify-backend`가 스모크에서 이미
+찌르는 것과 같은 대상). 여러 도메인이 있어도 fixture는 이 하나만 만든다 -
+지금 검증 스크립트가 딱 이 하나만 쓴다.
+
+**작성 순서**:
+1. `generated/docs/schema.sql`을 Read해서 그 엔드포인트의 request body 필드
+   중 다른 엔티티를 가리키는 FK(예: `stockId`, `couponId`, `productId`)가
+   있는지 확인한다. 있으면 그 엔티티의 테이블 스키마(컬럼명)도 같이 본다.
+2. FK마다 그 엔티티에 미리 넣어둘 **seed 로우 1개**를 만든다 - 통과에 필요한
+   최소한만(예: `Stock`이면 `availableQuantity`를 충분히 크게, `Coupon`이면
+   `status`를 사용가능한 값으로, `expiresAt`을 미래로). 값은 `requirements.md`의
+   업무 규칙을 참고해서 실제로 막히지 않을 값을 고른다.
+3. seed 로우의 id들을 request body 안에서 그대로 참조한다 - 서로 안 맞으면
+   fixture 자체가 실패한다.
+4. **테이블·컬럼명은 반드시 `schema.sql`에 나온 그대로, 큰따옴표 없이 적는다**
+   (postgres는 unquoted면 대소문자 무관하게 항상 소문자로 접어서 스키마와
+   저절로 맞는다 - `gen-backend-*/references/gotchas.md`의 quoted identifier
+   함정과 같은 이유).
+5. `api_spec.json` 최상위에 Edit로 추가한다:
+
+```json
+{
+  "endpoints": [ ... ],
+  "happyPath": {
+    "targetMethod": "POST",
+    "targetPath": "/orders",
+    "seed": [
+      {
+        "table": "Stock",
+        "columns": {
+          "stockId": "verify-stock-001",
+          "productId": "verify-product-001",
+          "sellerId": "verify-seller-001",
+          "availableQuantity": 100,
+          "reservedQuantity": 0,
+          "version": 0
+        }
+      }
+    ],
+    "body": {
+      "buyerId": "verify-buyer-001",
+      "items": [
+        {"productId": "verify-product-001", "sellerId": "verify-seller-001", "stockId": "verify-stock-001", "unitPrice": 10000, "quantity": 1}
+      ],
+      "receiverName": "검증용",
+      "receiverPhone": "01000000000",
+      "addressLine": "검증용 주소",
+      "postalCode": "00000"
+    },
+    "headers": {"X-User-Type": "BUYER", "X-User-Id": "verify-buyer-001"}
+  }
+}
+```
+
+- `headers`는 **선택**이다. 기본값은 `verify-backend`가 스모크에도 쓰는
+  `{"X-User-Type": "ADMIN"}`인데, 대상 엔드포인트 rules가 특정 역할만
+  허용하면(예: "호출자는 BUYER 본인이어야 한다") ADMIN으로도 403이 난다 -
+  그럴 때만 `headers`를 넣어서 기본값을 덮어쓴다. `X-User-Id`를 body의
+  buyerId/sellerId 등과 정확히 같은 값으로 맞춰야 "본인 소유만" 규칙도
+  통과한다.
+- `Idempotency-Key` 헤더는 넣지 않는다 - `verify-backend`가 매 호출마다
+  새 UUID로 자동으로 붙인다(fixture에 고정값을 넣으면 재검증 때 중복키로
+  막힐 수 있어서 스크립트 쪽에서 관리한다).
+
+- id 값은 `verify-`로 접두사를 붙여 실사용 데이터와 안 섞이게 한다.
+- 대상 엔드포인트에 FK가 전혀 없으면(순수 입력값만 받음) `seed: []`로 두고
+  `body`만 채운다.
+- 이 엔드포인트가 역할 제한이 있으면(rules 참고) `verify-backend`가 보내는
+  헤더는 항상 `X-User-Type: ADMIN`이다 - 그 역할로 통과 가능한 값으로
+  fixture를 짠다.
+
 ### 6. 자기 검토 (원본 대조)
 
 api_spec.json을 다 쓴 뒤, **원본 기획문서를 한 번 더 훑어서** 다음을 스스로
@@ -152,6 +238,9 @@ api_spec.json을 다 쓴 뒤, **원본 기획문서를 한 번 더 훑어서** �
 - 화면정의에 있는 입력 항목이 ERD·API 요청 스키마에 다 반영됐는가
 - 권한 매트릭스의 역할 제한이 관련 엔드포인트의 rules에 다 반영됐는가
 - 상태 전이표의 상태값들이 ERD의 status 필드 설명이나 rules에 반영됐는가
+- `happyPath.seed`의 테이블·컬럼명이 `schema.sql`과 정확히 일치하는가, `body`의
+  FK 값이 `seed`의 id와 정확히 같은 문자열인가(오타 하나로 fixture 전체가
+  실패한다)
 
 빠진 게 있으면 그 자리에서 고친다(재생성 아니라 Edit로 보완). 발견한 이슈가
 있고 판단이 애매하면 AskUserQuestion으로 사람에게 진행 여부를 확인한다

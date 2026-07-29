@@ -246,3 +246,45 @@ Windows WinNAT 예약범위라 막힘). **오케스트레이터도 서브에이�
   설계해야 해서 토큰 소모가 크다(세션당 컨텍스트 85% 넘게 쓴 시점에 판단).
   다음 세션에서 이어서 할 것 - `scripts/verify_backend.py` 구조 파악부터
   시작, 최소 1스택(fastapi 추천 - 가장 단순)으로 먼저 검증 후 나머지 확장.
+
+- **2026-07-29 (이어서 4)**: **외부 리뷰(codex) 반영 - happyPath fixture
+  검증 + 검증 격리 안전성.** 두 가지를 구현:
+  1. **검증 격리 (P0)**: `verify_backend.py`가 `stop_by_port`(spring 등)로
+     정리할 때 포트를 쥔 프로세스를 통째로 taskkill하는데, 그게 우리가 안
+     띄운 프로세스일 수 있었다(사전 확인 없음). `_port_in_use()` 사전 체크를
+     추가해 서버 기동 전 포트가 이미 쓰이고 있으면 아예 시작을 거부하도록
+     고쳤다 - 이 체크가 있으면 이후 그 포트에 나타나는 프로세스는 전부
+     우리가 띄운 것이라 안전하게 가정할 수 있다(별도 프로세스 트리 추적
+     없이 기존 kill-by-port 로직 그대로 안전해짐).
+  2. **happyPath fixture (위 3번 항목의 정식 버전)**: `gen-docs` 5.5단계로
+     `api_spec.json`에 `happyPath`(seed 로우 + 실제 통과하는 body)를 작성하는
+     단계 추가. `verify_backend.py`는 서버 기동 후 sqlite면 직접 db 파일에,
+     postgres면 psycopg3로 `doc:doc@localhost:55432/doc`에 접속해 seed를
+     심고, fixture body로 POST해서 "진짜 통과"를 확인한다 - fixture가 있는데
+     실패하면 이제 하드 실패(예전엔 4xx를 전부 "도메인 규칙일 수 있음"으로
+     봐줬음). 영속성 재기동 검사도 이 happyPath 결과를 재사용하도록 바꿨다.
+     구현 중 두 가지를 더 발견/수정: (a) `Idempotency-Key` 헤더가 BR-014로
+     명세에 실제로 있는데 스크립트가 안 보내서 fixture가 거부됨 - happyPath
+     POST엔 항상 UUID로 채운 Idempotency-Key를 같이 보내도록 고침. (b) 응답의
+     id 필드가 관례상 `id`가 아니라 `orderId`처럼 엔티티별로 다른데
+     `_list_ids`/영속성 검사가 `id`만 봤음 - `_id_field_name()`으로 api_spec의
+     response 스키마에서 실제 id 필드명을 찾아 쓰도록 일반화(`orderId` 같은
+     경우도 이제 정확히 잡는다). fastapi+sqlite, typescript+postgres 둘 다
+     실측: happyPath로 실제 주문 생성(201) → 재기동 후에도 남아있음 확인
+     (postgres는 psycopg3 라이브러리 사용, `sys.executable`로 인터프리터
+     고정해야 함 - PATH에 python이 여러 개 걸려있으면 다른 인터프리터가
+     골라져 `ModuleNotFoundError: psycopg`가 남).
+  같은 세션에서 `doc-pipeline`(LangGraph 자매 레포)엔 `plan_intake` 노드를,
+  `doc-pipeline-cc`엔 `plan-intake` 스킬을 각각 짰다(구현 방식이 서로 다름 -
+  전자는 `interrupt()`+checkpointer+self-loop 조건부 엣지, 후자는 세션 자체가
+  문맥을 들고 있어 그냥 순차 대화로 충분함). doc-pipeline 쪽은 아직 미커밋
+  (사람이 보류 요청), doc-pipeline-cc의 `plan-intake`는 실제로 한 번 대화로
+  질문 1개까지만 돌려보고 세션 중단(리밋) - 6개 질문 끝까지, markdown 조립,
+  최종승인, 파일 저장까지는 아직 미검증.
+  **작업 중 실수**: fastapi/typescript 백엔드를 번갈아 테스트하려고
+  `generated/frontend`를 `frontend_reactts`로 `mv`했다가, 정리 과정에서 백업인 줄
+  알고 `rm -rf`로 지워버렸다 - react-ts 프론트 산출물 유실(gitignore 대상이라
+  git엔 영향 없음, `gen-frontend-react-ts` 재실행하면 복구 가능하지만 아직 안 함).
+  **다음에 할 것**: `plan-intake` 스킬 전체 흐름(6질문+조립+승인+저장) e2e
+  검증, react-ts 프론트 재생성 여부 판단, `verify_backend.py`의 happyPath를
+  express/spring 스택에서도 검증(fastapi/typescript만 확인함).

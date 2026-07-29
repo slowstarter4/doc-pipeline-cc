@@ -16,9 +16,12 @@ doc-pipeline(OpenRouter판)의 verify_backend 노드를 그대로 이식 - "생�
 import argparse
 import json
 import os
+import socket
+import sqlite3
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,6 +33,11 @@ SERVER_LOG = Path("generated/server.log")
 STARTUP_TIMEOUT = 20
 POLL_INTERVAL = 0.5
 TEST_TIMEOUT = 180
+
+# gen_fastapi_scaffold.py/gen_express_scaffold.py가 생성 백엔드에 박아넣는 것과
+# 같은 고정값(db/docker-compose.yml 참고) - 여기서도 그대로 접속해 happyPath
+# fixture를 시딩한다.
+_POSTGRES_URL = "postgresql://doc:doc@localhost:55432/doc"
 
 
 @dataclass
@@ -74,6 +82,12 @@ def _launcher(target: str, db: str) -> "LaunchSpec | None":
             port=_PORTS["spring"], timeout=180, start_shell=True, stop_by_port=True,
         )
     return None
+
+
+def _port_in_use(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex(("127.0.0.1", port)) == 0
 
 
 def _wait_for_server(base_url: str, probe_path: str, timeout: float) -> bool:
@@ -152,14 +166,35 @@ def _stop_server(proc, spec: "LaunchSpec | None" = None) -> str:
     return SERVER_LOG.read_text(encoding="utf-8", errors="replace")[-4000:]
 
 
-def _list_ids(payload) -> list:
+def _list_ids(payload, id_field: str = "id") -> list:
     items = payload
     if isinstance(payload, dict):
         lists = [v for v in payload.values() if isinstance(v, list)]
         items = lists[0] if lists else []
     if not isinstance(items, list):
         return []
-    return [item.get("id") for item in items if isinstance(item, dict)]
+    return [item.get(id_field) for item in items if isinstance(item, dict)]
+
+
+def _id_field_name(api_spec: dict, method: str, path: str) -> str:
+    """응답 스키마에서 id 역할을 하는 필드명을 찾는다. api_spec 컨벤션상 응답이
+    항상 `id`인 건 아니다(예: 주문은 `orderId`) - 'id'가 있으면 그걸 쓰고, 없으면
+    '...Id'로 끝나는 첫 필드를 쓴다. 못 찾으면 관례상 'id'로 폴백한다."""
+    for ep in api_spec.get("endpoints", []):
+        if ep.get("method", "").upper() != method.upper() or ep.get("path") != path:
+            continue
+        response = ep.get("response") or {}
+        fields = response
+        for v in response.values():
+            if isinstance(v, list) and v and isinstance(v[0], dict):
+                fields = v[0]
+                break
+        if "id" in fields:
+            return "id"
+        for k in fields:
+            if k.lower().endswith("id"):
+                return k
+    return "id"
 
 
 # 이 헤더가 있으면 관리자 백오피스로 취급하는 컨벤션(gotchas.md 참고) - 스모크
@@ -247,24 +282,118 @@ def _run_contract_tests(base_url: str) -> "tuple[list[str], list[str]]":
     return ["계약 테스트 실패:\n" + (run.stdout or "")[-3000:] + (f"\n[stderr]\n{run.stderr[-500:]}" if run.stderr else "")], []
 
 
-def _check_persistence(base_url: str, api_spec: dict, proc, spec: LaunchSpec):
-    create = _first_create(api_spec)
-    if create is None:
-        return [], ["생성 엔드포인트가 없어 영속성 검사를 건너뜀."], proc
-
-    path, body = create
-    new_id = None
+def _seed_rows(db: str, seed: list[dict]) -> str | None:
+    """happyPath fixture의 seed 로우를 DB에 직접 심는다. 실패하면 에러 메시지
+    문자열을 돌려주고(None이면 성공), 항상 unquoted identifier로 쓴다 - postgres는
+    unquoted면 대소문자와 무관하게 항상 소문자로 접어서 schema.sql이 만든 실제
+    테이블과 저절로 맞는다(gotchas.md의 quoted identifier 함정을 안 밟는다)."""
     try:
-        r = requests.post(f"{base_url}{path}", json=body, headers=_SMOKE_HEADERS, timeout=5)
-        if r.status_code in (200, 201):
-            new_id = r.json().get("id")
+        if db == "sqlite":
+            db_files = list(BACKEND_DIR.glob("*.db"))
+            if not db_files:
+                return "happyPath 시딩 실패: sqlite db 파일을 못 찾음(서버가 아직 스키마를 안 만들었을 수 있음)."
+            conn = sqlite3.connect(db_files[0])
+            try:
+                for row in seed:
+                    cols = list(row["columns"].keys())
+                    placeholders = ", ".join(["?"] * len(cols))
+                    conn.execute(
+                        f"INSERT INTO {row['table']} ({', '.join(cols)}) VALUES ({placeholders})",
+                        [row["columns"][c] for c in cols],
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+        else:
+            import psycopg
+
+            conn = psycopg.connect(_POSTGRES_URL)
+            try:
+                for row in seed:
+                    cols = list(row["columns"].keys())
+                    placeholders = ", ".join(["%s"] * len(cols))
+                    conn.execute(
+                        f"INSERT INTO {row['table']} ({', '.join(cols)}) VALUES ({placeholders})",
+                        [row["columns"][c] for c in cols],
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+    except Exception as e:
+        return f"happyPath 시딩 중 예외: {type(e).__name__}: {e}"
+    return None
+
+
+def _run_happy_path(base_url: str, api_spec: dict, db: str):
+    """api_spec.happyPath fixture로 '진짜 통과하는' 생성 요청을 검증한다.
+    fixture가 없으면 (구버전 api_spec 등) 조용히 건너뛰되, 그 사실을 note로
+    남긴다(과거처럼 이걸 '통과'로 치지 않는다 - 정상 플로우가 미검증 상태임을
+    로그에서 눈에 띄게 한다). fixture가 있는데 실패하면 이건 하드 실패다 -
+    더미 데이터와 달리 fixture는 gen-docs가 통과하도록 설계한 값이라, 거부되면
+    "도메인 규칙일 수 있다"는 여지가 없다."""
+    happy = api_spec.get("happyPath")
+    if not happy:
+        return [], ["api_spec에 happyPath fixture가 없어 정상 생성 플로우를 못 씀 (구버전 api_spec일 수 있음)."], None, None, "id"
+
+    path = happy.get("targetPath")
+    body = happy.get("body")
+    seed = happy.get("seed") or []
+    if not path or body is None:
+        return ["happyPath fixture 형식이 잘못됨 (targetPath/body 필요)."], [], None, None, "id"
+
+    if seed:
+        err = _seed_rows(db, seed)
+        if err:
+            return [err], [], None, None, "id"
+
+    # 기본은 스모크와 같은 헤더(X-User-Type: ADMIN)지만, 이 엔드포인트가 특정
+    # 역할(예: "호출자는 BUYER 본인이어야 한다")만 허용하면 ADMIN으로도 막힌다 -
+    # 그런 경우 fixture의 headers가 기본값을 덮어쓴다(gen-docs가 rules 보고 채움).
+    # Idempotency-Key는 이 레포에서 생성 엔드포인트에 흔한 요구사항(BR-xxx)이라
+    # rules 파싱 없이 항상 같이 보낸다 - 안 쓰는 구현이면 그냥 무시될 뿐 무해하다.
+    headers = {**_SMOKE_HEADERS, **(happy.get("headers") or {}), "Idempotency-Key": str(uuid.uuid4())}
+    id_field = _id_field_name(api_spec, "POST", path)
+    try:
+        r = requests.post(f"{base_url}{path}", json=body, headers=headers, timeout=5)
+    except Exception as e:
+        return [f"happyPath POST {path} 요청 자체가 실패함: {e}"], [], None, None, id_field
+
+    if r.status_code not in (200, 201):
+        return [
+            f"happyPath 생성이 실패함 - fixture는 통과하도록 만든 값인데 "
+            f"{r.status_code} 반환 (body: {r.text[:400]})"
+        ], [], None, None, id_field
+
+    try:
+        new_id = r.json().get(id_field)
     except Exception:
-        pass
+        new_id = None
+    return [], [f"happyPath POST {path} 정상 생성 확인됨 (status {r.status_code})."], new_id, path, id_field
+
+
+def _check_persistence(base_url: str, api_spec: dict, proc, spec: LaunchSpec, db: str, precreated: "tuple[str, object, str] | None" = None):
+    if precreated is not None:
+        path, new_id, id_field = precreated
+    else:
+        # happyPath fixture가 없던 구버전 경로 - 더미 데이터로 대체(예전 그대로,
+        # 4xx 거부는 실패로 안 침 - 그 값이 뭘 뜻하는지 알 방법이 없어서다).
+        create = _first_create(api_spec)
+        if create is None:
+            return [], ["생성 엔드포인트가 없어 영속성 검사를 건너뜀."], proc
+        path, body = create
+        id_field = _id_field_name(api_spec, "POST", path)
+        new_id = None
+        try:
+            r = requests.post(f"{base_url}{path}", json=body, headers=_SMOKE_HEADERS, timeout=5)
+            if r.status_code in (200, 201):
+                new_id = r.json().get(id_field)
+        except Exception:
+            pass
 
     _stop_server(proc, spec)
 
     if new_id is None:
-        note = f"영속성 왕복 검사는 못 함 (더미 데이터가 POST {path}에서 거부됨). 별도로 실제 데이터로 재확인 권장."
+        note = f"영속성 왕복 검사는 못 함 (POST {path}에서 데이터를 못 만듦). 별도로 실제 데이터로 재확인 권장."
         return [], [note], None
 
     problems = []
@@ -276,7 +405,7 @@ def _check_persistence(base_url: str, api_spec: dict, proc, spec: LaunchSpec):
 
     try:
         r = requests.get(f"{base_url}{path}", headers=_SMOKE_HEADERS, timeout=5)
-        if new_id not in _list_ids(r.json()):
+        if new_id not in _list_ids(r.json(), id_field):
             problems.append("서버를 껐다 켜니 방금 만든 항목이 사라짐 - 데이터를 메모리에만 들고 있다는 뜻이다.")
     except Exception as e:
         problems.append(f"재기동 후 목록 조회 중 예외: {e}")
@@ -290,6 +419,20 @@ def verify(target: str, db: str, api_spec: dict) -> dict:
         return {"passed": True, "logs": f"(자동 검증 미등록 스택: {target})"}
 
     base_url = f"http://127.0.0.1:{spec.port}"
+
+    # 포트가 이미 쓰이고 있으면 그게 우리가 띄운 서버인지 남의 프로세스인지 알 방법이
+    # 없다. stop_by_port(spring 등)는 정리할 때 그 포트를 쥔 프로세스를 통째로
+    # taskkill하므로, 우리가 안 띄운 프로세스를 잘못 죽이지 않으려면 시작 전에
+    # 포트가 비어있다는 걸 확인해야 한다 - 이 사전 체크가 있어야 이후 그 포트에
+    # 나타나는 프로세스는 전부 우리가 띄운 것이라고 안전하게 가정할 수 있다.
+    if _port_in_use(spec.port):
+        return {
+            "passed": False,
+            "logs": f"포트 {spec.port}이 이미 사용 중입니다 - 다른 프로세스가 떠 있을 "
+            "수 있어 검증을 건너뜁니다(남의 프로세스를 잘못 종료하지 않기 위함). "
+            "그 포트를 쓰는 프로세스를 직접 확인/종료한 뒤 재실행하세요.",
+        }
+
     proc = None
     try:
         for cmd in spec.build:
@@ -317,12 +460,22 @@ def verify(target: str, db: str, api_spec: dict) -> dict:
         if problems:
             return {"passed": False, "logs": "스모크 테스트 실패:\n" + "\n".join(f"- {p}" for p in problems)}
 
+        # happyPath: fixture로 "진짜 통과하는" 생성 1건을 검증한다 - 더미 데이터는
+        # FK/재고 같은 선행조건이 없어 거부되기 쉬워 정상 플로우 자체가 안 됐는지를
+        # 못 잡았다(스모크의 POST 검사는 4xx를 "도메인 규칙일 수 있음"으로 봐준다).
+        # fixture가 있는데 실패하면 하드 실패 - fixture는 통과하도록 설계된 값이다.
+        hp_problems, hp_notes, hp_id, hp_path, hp_id_field = _run_happy_path(base_url, api_spec, db)
+        if hp_problems:
+            return {"passed": False, "logs": "happyPath 검증 실패:\n" + "\n".join(f"- {p}" for p in hp_problems)}
+        notes += hp_notes
+
         test_problems, test_notes = _run_contract_tests(base_url)
         if test_problems:
             return {"passed": False, "logs": "\n".join(test_problems)}
         notes += test_notes
 
-        problems, persist_notes, proc = _check_persistence(base_url, api_spec, proc, spec)
+        precreated = (hp_path, hp_id, hp_id_field) if hp_id is not None else None
+        problems, persist_notes, proc = _check_persistence(base_url, api_spec, proc, spec, db, precreated)
         if problems:
             return {"passed": False, "logs": "영속성 검사 실패:\n" + "\n".join(f"- {p}" for p in problems)}
 
@@ -377,6 +530,29 @@ if __name__ == "__main__":
     # request에 배열 필드(예: items)가 있어도 죽지 않고 빈 배열로 채워야 한다.
     array_spec = {"endpoints": [{"method": "POST", "path": "/orders", "request": {"buyerId": "string", "items": [{"productId": "string"}]}}]}
     assert _first_create(array_spec) == ("/orders", {"buyerId": "테스트", "items": []})
+
+    # happyPath fixture가 없는 (구버전) api_spec은 실패로 안 치고 note만 남긴다 -
+    # DB/서버 없이도 이 분기는 순수하게 검사할 수 있다.
+    hp_problems, hp_notes, hp_id, hp_path, hp_id_field = _run_happy_path("http://x", {}, "sqlite")
+    assert hp_problems == [] and hp_id is None and hp_path is None and hp_id_field == "id"
+    assert "happyPath" in hp_notes[0]
+
+    # 형식이 잘못된 fixture(targetPath 없음)는 문제로 잡는다.
+    bad_problems, _, _, _, _ = _run_happy_path("http://x", {"happyPath": {"body": {}}}, "sqlite")
+    assert bad_problems and "형식" in bad_problems[0]
+
+    # 응답 필드명이 'id'가 아니라 '...Id'로 끝나는 경우(예: orderId) 그걸 찾는다.
+    id_spec = {"endpoints": [
+        {"method": "POST", "path": "/orders", "response": {"orderId": "string", "status": "string"}},
+        {"method": "GET", "path": "/orders", "response": {"orders": [{"orderId": "string"}]}},
+        {"method": "GET", "path": "/books", "response": {"id": "number", "title": "string"}},
+    ]}
+    assert _id_field_name(id_spec, "POST", "/orders") == "orderId"
+    assert _id_field_name(id_spec, "GET", "/orders") == "orderId"
+    assert _id_field_name(id_spec, "GET", "/books") == "id"
+    assert _id_field_name(id_spec, "GET", "/nope") == "id"  # 못 찾으면 폴백
+
+    assert _list_ids([{"orderId": "a"}, {"orderId": "b"}], "orderId") == ["a", "b"]
 
     # 도메인 규칙 거부(400, 깨끗한 메시지)와 진짜 서버 버그(400인데 SQL/스택트레이스
     # 흔적)를 상태코드만으로 구분 못 하므로, 메시지 내용으로 버그를 잡아야 한다.
