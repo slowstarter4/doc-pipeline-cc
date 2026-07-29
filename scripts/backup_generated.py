@@ -83,20 +83,31 @@ def backup_if_exists(generated_dir: Path, name: str, timestamp: str) -> str | No
     return str(dest)
 
 
-def backup_all(generated_dir: Path) -> dict[str, str | None]:
+def backup_all(generated_dir: Path, include_docs: bool = False) -> dict[str, str | None]:
+    """기본은 backend/frontend만 백업한다 - `docs`는 스택이 아니라 **도메인**에
+    종속이라, 같은 기획문서로 스택만 바꿔 돌릴 땐 그대로 재사용하는 게 맞다
+    (문서 생성은 LLM 단계라 다시 뽑으면 비싸고 매번 내용이 조금씩 달라져서
+    스택 간 비교도 흐려진다. dialect만 schema_ddl.py로 다시 뽑으면 된다).
+    도메인 자체를 바꿀 때만 include_docs=True로 같이 치운다."""
+    names = ("backend", "frontend", "docs") if include_docs else ("backend", "frontend")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return {
         name: backup_if_exists(generated_dir, name, timestamp)
-        for name in ("backend", "frontend", "docs")
+        for name in names
     }
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--generated-dir", default="generated")
+    p.add_argument(
+        "--include-docs", action="store_true",
+        help="generated/docs도 같이 백업한다. 도메인(기획문서)을 바꿀 때만 쓴다 - "
+             "스택만 바꿀 땐 문서를 재사용해야 하므로 붙이지 않는다.",
+    )
     args = p.parse_args()
 
-    results = backup_all(Path(args.generated_dir))
+    results = backup_all(Path(args.generated_dir), include_docs=args.include_docs)
     moved = {k: v for k, v in results.items() if v}
     if not moved:
         print("백업할 이전 산출물 없음 (첫 실행이거나 이미 비어 있음).")
@@ -135,12 +146,19 @@ if __name__ == "__main__":
         assert detect_docs_dialect(root / "nope") == "unknown"  # schema.sql 없으면
         (docs / "schema.sql").write_text("CREATE TABLE Book (\n  id SERIAL PRIMARY KEY\n);")
 
-        results = backup_all(root)
-        assert results["backend"] is not None and "typescript" in results["backend"]
-        assert results["frontend"] is not None and "vanilla" in results["frontend"]
-        assert results["docs"] is not None and "postgres" in results["docs"]
+        # 기본: docs는 건드리지 않는다(스택만 바꾸는 경우 - 문서 재사용).
+        stack_only = backup_all(root)
+        assert stack_only["backend"] is not None and "typescript" in stack_only["backend"]
+        assert stack_only["frontend"] is not None and "vanilla" in stack_only["frontend"]
+        assert "docs" not in stack_only
+        assert docs.exists() and (docs / "schema.sql").exists()
         assert not backend.exists()  # 원래 자리는 비워짐
-        assert Path(results["backend"]).exists()
+        assert Path(stack_only["backend"]).exists()
+
+        # --include-docs: 도메인을 바꿀 때만. 이때는 dialect 태그가 붙는다.
+        with_docs = backup_all(root, include_docs=True)
+        assert with_docs["docs"] is not None and "postgres" in with_docs["docs"]
+        assert not docs.exists()
 
         # 이미 옮겨서 비어있는 상태에서 다시 돌리면 아무것도 안 한다(빈 폴더 무시).
         backend.mkdir(parents=True)
