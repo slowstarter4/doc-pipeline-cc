@@ -16,6 +16,7 @@ doc-pipeline(OpenRouter판)의 verify_backend 노드를 그대로 이식 - "생�
 import argparse
 import json
 import os
+import re
 import socket
 import sqlite3
 import subprocess
@@ -324,51 +325,157 @@ def _seed_rows(db: str, seed: list[dict]) -> str | None:
     return None
 
 
+_PLACEHOLDER_RE = re.compile(r"\$\{(\w+)\}")
+
+
+def _substitute(value, vars: dict):
+    """문자열 안의 `${varname}`을 앞선 스텝이 capture한 값으로 바꾼다.
+    문자열 전체가 딱 하나의 placeholder면 원래 타입(숫자 등)을 그대로 살린다 -
+    `"${bookId}"`가 문자열 "3"이 아니라 숫자 3으로 들어가야 하는 백엔드가 있다."""
+    if isinstance(value, str):
+        exact = _PLACEHOLDER_RE.fullmatch(value)
+        if exact:
+            return vars.get(exact.group(1), value)
+        return _PLACEHOLDER_RE.sub(lambda m: str(vars.get(m.group(1), m.group(0))), value)
+    if isinstance(value, dict):
+        return {k: _substitute(v, vars) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_substitute(v, vars) for v in value]
+    return value
+
+
+def _first_list(payload):
+    """응답에서 목록을 꺼낸다 - 그대로 배열이거나 wrapper dict({"loans": [...]}) 둘 다."""
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for v in payload.values():
+            if isinstance(v, list):
+                return v
+    return []
+
+
+def _legacy_to_steps(happy: dict) -> dict:
+    """구버전 fixture(targetPath/body 하나짜리)를 스텝 1개로 감싼다 - 예전
+    api_spec.json이 남아 있어도 조용히 건너뛰지 않고 그대로 검증되게 한다."""
+    if "steps" in happy or "targetPath" not in happy:
+        return happy
+    return {
+        "seed": happy.get("seed") or [],
+        "steps": [{
+            "name": "생성",
+            "method": happy.get("targetMethod", "POST"),
+            "path": happy["targetPath"],
+            "body": happy.get("body"),
+            "headers": happy.get("headers"),
+            "expect": [200, 201],
+            "capture": {"__persist": "id"},
+        }],
+    }
+
+
 def _run_happy_path(base_url: str, api_spec: dict, db: str):
-    """api_spec.happyPath fixture로 '진짜 통과하는' 생성 요청을 검증한다.
-    fixture가 없으면 (구버전 api_spec 등) 조용히 건너뛰되, 그 사실을 note로
-    남긴다(과거처럼 이걸 '통과'로 치지 않는다 - 정상 플로우가 미검증 상태임을
-    로그에서 눈에 띄게 한다). fixture가 있는데 실패하면 이건 하드 실패다 -
-    더미 데이터와 달리 fixture는 gen-docs가 통과하도록 설계한 값이라, 거부되면
-    "도메인 규칙일 수 있다"는 여지가 없다."""
+    """api_spec.happyPath 시나리오를 순서대로 실행한다.
+
+    단발 생성 호출만 하던 예전 버전은 "정상 플로우가 되는가"를 사실상 검증하지
+    못했다 - fixture 대상이 '명세의 첫 POST'로 정해져 있어서, 도메인의 핵심
+    상태전이(대출→연체→반납→제재 같은 것)는 한 번도 안 타고 가장 단순한
+    등록 엔드포인트만 찔렀다(실측 2026-07-29 library 도메인: 8개 중 4개만
+    호출, 로직이 있는 4개는 전부 미검증). 그래서 스텝 배열로 바꿨다:
+    앞 스텝의 응답에서 값을 capture해 뒤 스텝의 path/body에 `${var}`로 꽂아,
+    실제 사용 순서대로 여러 엔드포인트를 엮어 때린다.
+
+    스텝 하나의 형식:
+      {"name": "대출", "method": "POST", "path": "/loans",
+       "body": {"memberId": "${memberId}"}, "headers": {...},
+       "expect": 201 (또는 [200,201]),
+       "capture": {"loanId": "id"},          # 응답 필드 → 변수
+       "expectAnyItem": {"overdue": true}}   # 목록 응답에 이런 항목이 있어야 함
+
+    `expect`에 4xx를 적으면 '거부되어야 정상'인 케이스도 검증할 수 있다(예:
+    제재 중 재대출이 409로 막히는지) - 통과 케이스만 보면 규칙이 아예 구현
+    안 돼 있어도 초록불이 뜬다.
+
+    fixture가 없으면 건너뛰되 그 사실을 note로 남긴다(통과로 위장하지 않는다).
+    있는데 실패하면 하드 실패 - fixture는 통과하도록 설계된 값이라 "도메인
+    규칙일 수 있다"는 여지가 없다."""
     happy = api_spec.get("happyPath")
     if not happy:
-        return [], ["api_spec에 happyPath fixture가 없어 정상 생성 플로우를 못 씀 (구버전 api_spec일 수 있음)."], None, None, "id"
+        return [], ["api_spec에 happyPath fixture가 없어 정상 플로우를 못 씀 (구버전 api_spec일 수 있음)."], None
+    happy = _legacy_to_steps(happy)
 
-    path = happy.get("targetPath")
-    body = happy.get("body")
+    steps = happy.get("steps") or []
+    if not steps:
+        return ["happyPath fixture에 steps가 없다."], [], None
+
     seed = happy.get("seed") or []
-    if not path or body is None:
-        return ["happyPath fixture 형식이 잘못됨 (targetPath/body 필요)."], [], None, None, "id"
-
     if seed:
         err = _seed_rows(db, seed)
         if err:
-            return [err], [], None, None, "id"
+            return [err], [], None
 
-    # 기본은 스모크와 같은 헤더(X-User-Type: ADMIN)지만, 이 엔드포인트가 특정
-    # 역할(예: "호출자는 BUYER 본인이어야 한다")만 허용하면 ADMIN으로도 막힌다 -
-    # 그런 경우 fixture의 headers가 기본값을 덮어쓴다(gen-docs가 rules 보고 채움).
-    # Idempotency-Key는 이 레포에서 생성 엔드포인트에 흔한 요구사항(BR-xxx)이라
-    # rules 파싱 없이 항상 같이 보낸다 - 안 쓰는 구현이면 그냥 무시될 뿐 무해하다.
-    headers = {**_SMOKE_HEADERS, **(happy.get("headers") or {}), "Idempotency-Key": str(uuid.uuid4())}
-    id_field = _id_field_name(api_spec, "POST", path)
-    try:
-        r = requests.post(f"{base_url}{path}", json=body, headers=headers, timeout=5)
-    except Exception as e:
-        return [f"happyPath POST {path} 요청 자체가 실패함: {e}"], [], None, None, id_field
+    vars: dict = {}
+    notes = []
+    persist: "tuple[str, object, str] | None" = None
 
-    if r.status_code not in (200, 201):
-        return [
-            f"happyPath 생성이 실패함 - fixture는 통과하도록 만든 값인데 "
-            f"{r.status_code} 반환 (body: {r.text[:400]})"
-        ], [], None, None, id_field
+    for i, step in enumerate(steps, 1):
+        label = step.get("name") or f"스텝 {i}"
+        method = step.get("method", "POST").upper()
+        path = _substitute(step.get("path", ""), vars)
+        body = _substitute(step.get("body"), vars) if step.get("body") is not None else None
+        # Idempotency-Key는 이 레포 생성 엔드포인트에 흔한 요구사항이라 매번 새로
+        # 붙인다(안 쓰는 구현이면 무시될 뿐). fixture headers가 기본 헤더를 덮는다.
+        headers = {**_SMOKE_HEADERS, **(step.get("headers") or {}), "Idempotency-Key": str(uuid.uuid4())}
+        expect = step.get("expect", [200, 201])
+        expect = [expect] if isinstance(expect, int) else list(expect)
 
-    try:
-        new_id = r.json().get(id_field)
-    except Exception:
-        new_id = None
-    return [], [f"happyPath POST {path} 정상 생성 확인됨 (status {r.status_code})."], new_id, path, id_field
+        try:
+            r = requests.request(method, f"{base_url}{path}", json=body, headers=headers, timeout=5)
+        except Exception as e:
+            return [f"[{label}] {method} {path} 요청 자체가 실패함: {e}"], notes, None
+
+        if r.status_code not in expect:
+            return [
+                f"[{label}] {method} {path}: {expect} 를 기대했는데 {r.status_code} 반환 "
+                f"(body: {r.text[:400]})"
+            ], notes, None
+        if _looks_like_bug(r.text):
+            return [
+                f"[{label}] {method} {path}: 상태코드는 {r.status_code}로 기대와 맞지만 "
+                f"응답에 기술적 예외 흔적이 있다 (body: {r.text[:400]})"
+            ], notes, None
+
+        try:
+            payload = r.json()
+        except Exception:
+            payload = None
+
+        want = step.get("expectAnyItem")
+        if want:
+            items = _first_list(payload)
+            if not any(all(item.get(k) == v for k, v in want.items()) for item in items if isinstance(item, dict)):
+                return [
+                    f"[{label}] {method} {path}: 응답 목록에 {want} 인 항목이 없다 "
+                    f"(계산 필드가 안 채워졌거나 규칙이 반영 안 됐을 수 있음. body: {r.text[:400]})"
+                ], notes, None
+
+        for var, field in (step.get("capture") or {}).items():
+            got = payload.get(field) if isinstance(payload, dict) else None
+            if got is None:
+                return [
+                    f"[{label}] {method} {path}: 응답에서 '{field}'를 못 찾아 "
+                    f"'{var}'를 capture할 수 없다 (body: {r.text[:400]})"
+                ], notes, None
+            if var == "__persist":
+                # 재기동 후에도 남아있는지 확인할 대상(첫 생성 스텝 하나면 충분).
+                if persist is None:
+                    persist = (path, got, field)
+            else:
+                vars[var] = got
+
+        notes.append(f"happyPath [{label}] {method} {path} → {r.status_code} OK")
+
+    return [], notes, persist
 
 
 def _check_persistence(base_url: str, api_spec: dict, proc, spec: LaunchSpec, db: str, precreated: "tuple[str, object, str] | None" = None):
@@ -464,17 +571,19 @@ def verify(target: str, db: str, api_spec: dict) -> dict:
         # FK/재고 같은 선행조건이 없어 거부되기 쉬워 정상 플로우 자체가 안 됐는지를
         # 못 잡았다(스모크의 POST 검사는 4xx를 "도메인 규칙일 수 있음"으로 봐준다).
         # fixture가 있는데 실패하면 하드 실패 - fixture는 통과하도록 설계된 값이다.
-        hp_problems, hp_notes, hp_id, hp_path, hp_id_field = _run_happy_path(base_url, api_spec, db)
+        hp_problems, hp_notes, precreated = _run_happy_path(base_url, api_spec, db)
         if hp_problems:
-            return {"passed": False, "logs": "happyPath 검증 실패:\n" + "\n".join(f"- {p}" for p in hp_problems)}
+            return {
+                "passed": False,
+                "logs": "happyPath 검증 실패:\n" + "\n".join(f"- {p}" for p in hp_problems)
+                + ("\n[여기까지는 통과]\n" + "\n".join(f"- {n}" for n in hp_notes) if hp_notes else ""),
+            }
         notes += hp_notes
 
         test_problems, test_notes = _run_contract_tests(base_url)
         if test_problems:
             return {"passed": False, "logs": "\n".join(test_problems)}
         notes += test_notes
-
-        precreated = (hp_path, hp_id, hp_id_field) if hp_id is not None else None
         problems, persist_notes, proc = _check_persistence(base_url, api_spec, proc, spec, db, precreated)
         if problems:
             return {"passed": False, "logs": "영속성 검사 실패:\n" + "\n".join(f"- {p}" for p in problems)}
@@ -533,13 +642,31 @@ if __name__ == "__main__":
 
     # happyPath fixture가 없는 (구버전) api_spec은 실패로 안 치고 note만 남긴다 -
     # DB/서버 없이도 이 분기는 순수하게 검사할 수 있다.
-    hp_problems, hp_notes, hp_id, hp_path, hp_id_field = _run_happy_path("http://x", {}, "sqlite")
-    assert hp_problems == [] and hp_id is None and hp_path is None and hp_id_field == "id"
+    hp_problems, hp_notes, hp_persist = _run_happy_path("http://x", {}, "sqlite")
+    assert hp_problems == [] and hp_persist is None
     assert "happyPath" in hp_notes[0]
 
-    # 형식이 잘못된 fixture(targetPath 없음)는 문제로 잡는다.
-    bad_problems, _, _, _, _ = _run_happy_path("http://x", {"happyPath": {"body": {}}}, "sqlite")
-    assert bad_problems and "형식" in bad_problems[0]
+    # steps가 비면 문제로 잡는다.
+    bad_problems, _, _ = _run_happy_path("http://x", {"happyPath": {"steps": []}}, "sqlite")
+    assert bad_problems and "steps" in bad_problems[0]
+
+    # `${var}` 치환: 문자열 전체가 placeholder면 원래 타입(숫자)을 살린다.
+    v = {"bookId": 3, "name": "홍길동"}
+    assert _substitute("${bookId}", v) == 3          # 문자열 "3"이 아니라 숫자 3
+    assert _substitute("/loans/${bookId}/return", v) == "/loans/3/return"
+    assert _substitute({"a": "${bookId}", "b": ["${name}"]}, v) == {"a": 3, "b": ["홍길동"]}
+    assert _substitute("${nope}", v) == "${nope}"    # 없는 변수는 그대로 둔다
+
+    # 응답에서 목록 꺼내기: 배열 그대로 / wrapper dict 둘 다.
+    assert _first_list([{"id": 1}]) == [{"id": 1}]
+    assert _first_list({"loans": [{"id": 2}]}) == [{"id": 2}]
+    assert _first_list({"count": 0}) == []
+
+    # 구버전 fixture는 스텝 1개로 감싸서 그대로 검증되게 한다(조용히 건너뛰지 않음).
+    legacy = _legacy_to_steps({"targetPath": "/books", "body": {"title": "x"}})
+    assert len(legacy["steps"]) == 1
+    assert legacy["steps"][0]["path"] == "/books"
+    assert legacy["steps"][0]["capture"] == {"__persist": "id"}
 
     # 응답 필드명이 'id'가 아니라 '...Id'로 끝나는 경우(예: orderId) 그걸 찾는다.
     id_spec = {"endpoints": [
