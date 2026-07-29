@@ -288,3 +288,27 @@ Windows WinNAT 예약범위라 막힘). **오케스트레이터도 서브에이�
   **다음에 할 것**: `plan-intake` 스킬 전체 흐름(6질문+조립+승인+저장) e2e
   검증, react-ts 프론트 재생성 여부 판단, `verify_backend.py`의 happyPath를
   express/spring 스택에서도 검증(fastapi/typescript만 확인함).
+- **2026-07-29 (이어서 5)**: **`plan-intake` → `build-app` 전체 파이프라인
+  e2e 검증 완료** (도서 대출 관리 시스템, 도메인부터 완전히 새로 만듦).
+  `plan-intake`: 6개 질문 순차 응답(도서/회원/대출 엔티티, 필드, 동작,
+  제약 - 동시대출 3권/연체중 대출불가/연체반납시 1개월 제한, 화면 3개,
+  제외범위) → 세션이 직접 markdown 조립 → 사람 승인 → `examples/
+  library_plan_v2.md` 저장까지 문제없이 동작. 저장 직전 3-5 제약 목록에
+  중복 문구가 있어 그 자리에서 고쳐 저장(자기 검토가 실제로 작동).
+  `build-app`: spring+react-ts+postgres 선택, 기존 커머스 도메인 산출물은
+  `generated/*_commerce_*`로 백업 후 완전히 새 도메인으로 gen-docs 전체
+  단계(요구사항~happyPath fixture)를 처음부터 실행 - 도메인 조각 3개
+  (books/members/loans) + 프론트 1개 병렬 디스패치, **버그 없이 1차 통과**
+  (`verify_backend.py`가 happyPath까지 포함해 한 번에 통과). 브라우저로
+  실제 골든패스 전부 확인: 도서 등록 → 회원 등록 → 과거 반납예정일로 대출
+  처리 → 목록에서 연체 빨간 배경 표시 확인 → 반납 처리 → 회원
+  `loanRestrictedUntil`이 정확히 오늘+1개월로 갱신됨 확인 → 그 회원으로
+  재대출 시도하면 "대출 제한 기간 중입니다" 409 거부까지 확인(FR-012/C2
+  둘 다 실제로 맞물려 동작). 네이티브 HTML `<input type="date">`/`<select>`
+  는 claude-in-chrome 좌표 클릭으로 채우면 세그먼트가 자꾸 어긋나 실패했다
+  - `javascript_tool`로 `Object.getOwnPropertyDescriptor(...).set` 호출 후
+  `input`/`change` 이벤트를 직접 dispatch하는 방식으로 우회(날짜·셀렉트
+  필드가 있는 화면을 자동화로 채울 때 다음에도 이 방식을 우선 쓸 것).
+  **남은 것**: `verify_backend.py`의 happyPath를 express 스택에서도 검증
+  (fastapi/typescript/spring 셋 다 확인됨). react-ts 프론트(커머스 도메인)
+  유실분은 결국 재생성 안 함 - 필요해지면 그때 `gen-frontend-react-ts`로.
