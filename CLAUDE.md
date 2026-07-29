@@ -201,3 +201,39 @@ Windows WinNAT 예약범위라 막힘). **오케스트레이터도 서브에이�
   **남은 것**: typescript/react-ts 조합 미검증. `build-app` 보강 항목 2가지
   누적됨(① 재실행 시 backend/frontend 백업 자동화, ② DB_TARGET 변경 시
   schema.sql 재생성 스텝 명시).
+- **2026-07-29 (이어서)**: **typescript + react-ts + postgres 조합 검증 완료**
+  - 6스택 조합(backend 4종×frontend 3종 중 실측 검증 대상) 전부 커버.
+  도메인 조각 자체는 버그 없이 1차 통과했지만 **`gen_express_scaffold.py`의
+  TS 빌드 스크립트 버그를 하나 발견해 원인 수정**: `"build": "tsc"`가
+  `dist/`로 컴파일만 하고 `schema.sql`은 안 옮겨서, `server.ts`가
+  `readFileSync(join(__dirname, 'schema.sql'))`로 찾을 때 실행 위치가
+  `dist/`라 `ENOENT`로 기동 자체가 실패했다(express의 plain JS는 `dist`
+  분리가 없어서 이 버그가 없었다 - TS 전용 갭). `scripts/gen_express_scaffold.py`
+  의 `build` 스크립트를 `tsc && node -e "...copyFileSync('schema.sql',
+  'dist/schema.sql')..."`로 고쳐 다음부터 생성되는 모든 TS 백엔드에 반영
+  (LLM 서브에이전트 잘못이 아니라 결정적 스캐폴드 스크립트 버그라 스크립트
+  레벨에서 고침 - gotchas.md에 안 올림). 이후 재검증 통과, react-ts 프론트도
+  `tsc --noEmit`/`vite build`/`verify_frontend.py` 전부 1차 통과(디자인 토큰
+  14/15, wrapper key 10/10). 브라우저로 주문 생성까지 확인 - `결제예정액
+  13000원`(BR-010 정상), postgres `order_` 테이블에 영속 확인.
+  기존 fastapi/vanilla 산출물은 `generated/backend_fastapi/`,
+  `generated/frontend_vanilla/`로 백업.
+  **build-app 보강항목 최종 리스트(2세션 누적)**:
+  1. **DB_TARGET 재선택 시 schema.sql 재생성 스텝 누락** - 0단계에서
+     DB_TARGET을 물어본 뒤, 기존 `generated/docs/schema.sql`이 다른
+     dialect로 만들어졌으면 `schema_ddl.py --dialect <DB_TARGET>`로
+     다시 뽑으라는 안내가 스킬 문서에 없다. dialect 불일치를 스킬이
+     자동 감지하지도 않는다.
+  2. **스택 재실행 시 이전 backend/frontend 산출물 백업 자동화 없음** -
+     `generated/backend`, `generated/frontend`를 스택별로 매번 오케스트레이터가
+     수동 `mv`로 백업(`backend_<이전스택>/`)해야 했다. 2번 다 이렇게 처리함 -
+     스킬 0단계나 4단계에 "재실행 감지 시 기존 산출물 타임스탬프/스택명으로
+     이동" 스텝을 넣을지 검토.
+  3. **`verify_backend.py`가 유효 데이터 골든패스를 검증하지 않음** - 스모크는
+     전부 "잘못된 데이터 거부" 케이스 위주라, 재고 미시딩처럼 정상 플로우를
+     막는 문제(DB에 Stock row 없음)를 못 잡는다. 두 세션 다 브라우저 수동
+     검증에서 재고를 수동 시딩해야 주문이 성사됐다 - 검증 스크립트에 최소
+     시딩 데이터를 넣고 "정상 주문 1건 생성" 케이스를 추가할지 검토.
+  4. **vanilla 프론트는 file://을 claude-in-chrome 확장이 막는다** - 브라우저
+     자동화로 열 때는 `python -m http.server`로 띄워야 한다(사람이 직접 여는
+     안내 자체는 유효, 자동화 검증 절차에만 해당).

@@ -118,7 +118,8 @@ def package_json(dialect: str, ts: bool) -> str:
         dev_deps = ['"typescript": "^5.5.4"', '"@types/express": "^4.17.21"', '"@types/cors": "^2.8.17"', '"@types/node": "^20.14.0"']
         if dialect == "postgres":
             dev_deps.append('"@types/pg": "^8.11.6"')
-        build = '"build": "tsc",\n    "start": "node --experimental-sqlite dist/server.js"' if dialect != "postgres" else '"build": "tsc",\n    "start": "node dist/server.js"'
+        copy_schema = '"tsc && node -e \\"require(\'fs\').copyFileSync(\'schema.sql\',\'dist/schema.sql\')\\""'
+        build = f'"build": {copy_schema},\n    "start": "node --experimental-sqlite dist/server.js"' if dialect != "postgres" else f'"build": {copy_schema},\n    "start": "node dist/server.js"'
         return (
             "{\n"
             '  "name": "backend",\n'
