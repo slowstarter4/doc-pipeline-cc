@@ -312,3 +312,10 @@ Windows WinNAT 예약범위라 막힘). **오케스트레이터도 서브에이�
   **남은 것**: `verify_backend.py`의 happyPath를 express 스택에서도 검증
   (fastapi/typescript/spring 셋 다 확인됨). react-ts 프론트(커머스 도메인)
   유실분은 결국 재생성 안 함 - 필요해지면 그때 `gen-frontend-react-ts`로.
+- **2026-07-29 (이어서 6)**: **express+sqlite happyPath 검증 완료 -
+  4개 백엔드 스택(fastapi/typescript/spring/express) 전부 happyPath 실측
+  확인됨.** 같은 도서 대출 도메인(library_plan_v2)으로 express 3조각
+  (books/members/loans) 병렬 디스패치, 재디스패치 없이 1차 통과
+  (`verify_backend.py --target express --db sqlite`, happyPath POST /books
+  201 확인). 이걸로 4스택×happyPath 매트릭스가 다 채워졌다 - 앞으로 새
+  도메인/스택 조합을 시험할 때 happyPath 관련 미검증 스택 걱정은 없다.
