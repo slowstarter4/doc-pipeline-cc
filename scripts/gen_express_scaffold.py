@@ -115,7 +115,11 @@ def package_json(dialect: str, ts: bool) -> str:
         deps.append('"pg": "^8.12.0"')
     if ts:
         script = "node --loader ts-node/esm server.ts" if False else "tsc && node dist/server.js"
-        dev_deps = ['"typescript": "^5.5.4"', '"@types/express": "^4.17.21"', '"@types/cors": "^2.8.17"', '"@types/node": "^20.14.0"']
+        # @types/node는 22.x여야 한다 - sqlite 방언에서 db.ts가 `node:sqlite`를
+        # import하는데 그 타입 선언이 @types/node 22부터 들어왔다(node:sqlite 자체가
+        # Node 22.5+ 기능). 20.x로 두면 런타임은 되는데 tsc가
+        # `TS2307: Cannot find module 'node:sqlite'`로 빌드를 막는다(실측 2026-07-29).
+        dev_deps = ['"typescript": "^5.5.4"', '"@types/express": "^4.17.21"', '"@types/cors": "^2.8.17"', '"@types/node": "^22.10.0"']
         if dialect == "postgres":
             dev_deps.append('"@types/pg": "^8.11.6"')
         copy_schema = '"tsc && node -e \\"require(\'fs\').copyFileSync(\'schema.sql\',\'dist/schema.sql\')\\""'

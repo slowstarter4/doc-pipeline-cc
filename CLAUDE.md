@@ -337,3 +337,40 @@ Windows WinNAT 예약범위라 막힘). **오케스트레이터도 서브에이�
   검증한 조합이 스택별로 1회씩이라, 조합을 섞으면(예: fastapi+react,
   spring+vanilla) 아직 안 드러난 계약·포트·에러키 불일치가 나올 수 있다.
   이 과정 자체가 새로 만든 `backup_generated.py`의 실사용 검증도 된다.
+- **2026-07-29 (이어서 8)**: **조합 매트릭스 4회차 완주 - 백엔드×DB 8칸
+  전부 커버.** 매 회차가 "미검증 DB 경로 + 미검증 프론트 페어링"을 동시에
+  덮도록 설계해서 4번으로 끝냈다(도메인은 library_plan_v2 고정, 문서 재사용).
+  ① fastapi+react+postgres ② spring+vanilla+sqlite ③ typescript+react+sqlite
+  ④ express+react-ts+sqlite. 넷 다 골든패스(도서·회원 등록 → 과거 반납예정일로
+  대출 → 연체 표시 → 반납 → 회원 제한 오늘+1개월 → 제한 중 재대출 409 거부)를
+  브라우저로 확인했다.
+  **발견한 실제 버그 1건(스캐폴드)**: ③에서 `npm run build`가
+  `TS2307: Cannot find module 'node:sqlite'`로 실패. `gen_express_scaffold.py`가
+  TS devDeps에 `@types/node@^20.14.0`을 박는데, `node:sqlite` 타입 선언은
+  @types/node 22부터 들어온다(node:sqlite 자체가 Node 22.5+ 기능). 런타임은
+  Node 22.19라 멀쩡한데 tsc만 막힌 케이스. `^22.10.0`으로 올려 고쳤고,
+  **조각 코드는 한 줄도 안 고치고 스캐폴드 재생성만으로 통과**했다(결정적
+  스캐폴드 버그는 gotchas.md가 아니라 스크립트에서 고친다는 원칙 재확인 -
+  dist/schema.sql 복사 버그 때와 같은 패턴).
+  나머지 3회차는 재디스패치 0회로 1차 통과. postgres 소문자 폴딩·sqlite
+  GeneratedKeyHolder·node:sqlite 동기 API·에러키(`detail` vs `message`) 전부
+  각 스택 gotchas가 이미 잡아주고 있었다.
+  `backup_generated.py`도 매 회차 실사용으로 검증됨(fastapi/react,
+  spring/vanilla, typescript/react 태그를 매번 정확히 감지). **다만 첫
+  실사용에서 자체 버그가 하나 나왔다**: 다른 `scripts/*.py`의 "인자 없으면
+  self-check" 관례를 그대로 따랐는데, 이 스크립트는 정상 호출이 인자 없는
+  형태라 백업이 통째로 self-check로 새서 no-op이 됐다. self-check를
+  `--self-check` 뒤로 빼서 고침(관례를 기계적으로 따르면 안 되는 반례).
+  또 docs를 기본 백업 대상에서 뺐다 - docs는 스택이 아니라 도메인 종속이라
+  스택만 바꿀 땐 재사용해야 한다(매번 재생성하면 gen-docs가 다시 돌아 비싸고,
+  LLM 산출물이라 내용이 달라져 "스택을 바꿨더니 결과가 달라졌다"의 원인
+  분리가 안 된다). 도메인 교체 시에만 `--include-docs`.
+  **관측된 미해결 이슈(코드 아님)**: `verify_frontend.py`의 경로 추출 정규식이
+  **주석 안의 백틱 리터럴도 실제 호출로 오인**한다 - 프론트 에이전트가
+  주석에 `${BASE}/...` 예시를 썼다가 가짜 경로로 잡혀 검사가 실패한 사례가
+  두 번 있었다(에이전트가 주석 문구를 바꿔 우회). 지금은 디스패치 프롬프트에
+  "주석에 백틱 경로 쓰지 마라"를 넣어 회피 중인데, 근본적으로는 추출기가
+  주석을 걸러야 한다.
+  **남은 것**: 프론트 페어링 12칸 중 8칸 커버됨(미검증: fastapi+react-ts,
+  spring+react, express+vanilla, typescript+vanilla) - 각 축이 개별 검증돼
+  우선순위는 낮다. `verify_frontend.py`의 주석 오탐 수정.
