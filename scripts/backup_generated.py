@@ -105,7 +105,15 @@ def main() -> None:
         help="generated/docs도 같이 백업한다. 도메인(기획문서)을 바꿀 때만 쓴다 - "
              "스택만 바꿀 땐 문서를 재사용해야 하므로 붙이지 않는다.",
     )
+    p.add_argument(
+        "--self-check", action="store_true",
+        help="자기점검만 돌리고 끝낸다(임시 디렉터리에서, 실제 generated/는 안 건드림).",
+    )
     args = p.parse_args()
+
+    if args.self_check:
+        self_check()
+        return
 
     results = backup_all(Path(args.generated_dir), include_docs=args.include_docs)
     moved = {k: v for k, v in results.items() if v}
@@ -116,11 +124,11 @@ def main() -> None:
             print(f"generated/{name} -> {dest}")
 
 
-if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        main()
-        sys.exit(0)
-
+# 다른 scripts/*.py는 "인자 없으면 self-check"이지만 이 스크립트만 반대다 -
+# 정상 호출(`python scripts/backup_generated.py`)이 인자가 없는 형태라, 그 관례를
+# 따르면 정상 호출이 통째로 self-check로 새서 백업이 조용히 안 된다(실제로 그렇게
+# 만들었다가 첫 실사용에서 걸렸다). 그래서 self-check를 --self-check 뒤로 뺐다.
+def self_check() -> None:
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -166,3 +174,7 @@ if __name__ == "__main__":
         assert again is None
 
     print("backup_generated self-check 통과")
+
+
+if __name__ == "__main__":
+    main()
