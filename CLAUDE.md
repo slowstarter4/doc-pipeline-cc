@@ -177,3 +177,27 @@ Windows WinNAT 예약범위라 막힘). **오케스트레이터도 서브에이�
   **다음에 할 것**: typescript/vanilla/react-ts 나머지 3스택 조합도
   commerce_qwen_plan.md로 검증. `build-app`의 "스택 재실행 시 이전
   generated/backend 백업" 스텝 보강 검토.
+- **2026-07-29**: **fastapi + vanilla + sqlite 조합 검증 완료** - 이번엔
+  버그 없이 1차 통과(도메인 10조각+프론트 1개, 재디스패치 0회). gen-docs
+  산출물은 재사용했지만 `schema.sql`은 이전 실행이 postgres dialect로
+  만든 것이라 `python scripts/schema_ddl.py generated/docs/data_model.json
+  --dialect sqlite -o generated/docs/schema.sql`로 다시 뽑아야 했다 - **스택
+  재실행 시 DB_TARGET이 바뀌면 schema.sql도 재생성 필요**, `build-app`
+  스킬 0단계에 이 스텝이 명시돼 있지 않아 놓치기 쉽다(다음에 스킬 문서에
+  반영 검토). `verify_backend.py`가 스모크(8건)는 통과시켰지만 유효한
+  주문 생성 케이스까지는 안 건드려서(전부 잘못된 데이터 거부 확인용) 브라우저
+  수동 검증으로 실제 골든패스를 봐야 했다 - sqlite DB(`generated/backend/
+  app.db`)에 Stock 로우가 하나도 없어 주문 생성이 막혔던 것도 스크립트가
+  안 잡았다(재고 사전 시딩이 필요하다는 게 검증 스크립트 범위 밖). 수동으로
+  `Stock` 1행 심고 브라우저에서 주문서 작성 → `주문 생성됨: order_...
+  (총 결제금액 13000)` 확인, DB 직접 조회로 영속(status=CREATED,
+  totalPaymentAmount=13000)까지 확인 - BR-010 배송비 안분 정상(상품 10,000 +
+  배송비 3,000). 프론트는 vanilla 특성상 로컬 file://을 브라우저 확장이 막아서
+  `python -m http.server`로 띄워 열었다(파일 직접 열기 안내는 여전히 유효하나
+  claude-in-chrome로 열 땐 이 우회가 필요).
+  기존 express/react 산출물은 `generated/backend_express/`,
+  `generated/frontend_react/`로 백업 후 덮어씀(수동 - 여전히 스킬 자체
+  백업 스텝은 없음, 이번에도 오케스트레이터가 매뉴얼로 처리).
+  **남은 것**: typescript/react-ts 조합 미검증. `build-app` 보강 항목 2가지
+  누적됨(① 재실행 시 backend/frontend 백업 자동화, ② DB_TARGET 변경 시
+  schema.sql 재생성 스텝 명시).
