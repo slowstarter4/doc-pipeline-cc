@@ -43,7 +43,53 @@ def _normalize(path: str) -> str:
     return p
 
 
+def _strip_comments(text: str) -> str:
+    """주석(`//`, `/* */`, `<!-- -->`)만 걷어내고 문자열 리터럴은 그대로 둔다.
+
+    왜 필요한가: 경로 추출이 원문을 통째로 훑으면 **주석에 적힌 예시 URL도
+    실제 호출로 오인**한다 - 프론트 에이전트가 주석에 `` `${BASE}/...` `` 예시를
+    썼다가 "명세에 없는 경로 호출(계약 위반)"로 잡혀 검사가 실패한 사례가
+    두 번 있었다(2026-07-29). 반대로 정규식으로 대충 주석을 지우면
+    `const BASE = "http://localhost:8080"`의 `//`에서 줄이 잘려 진짜 호출을
+    놓친다(오탐보다 나쁜 미탐). 그래서 문자열 안/밖을 구분하는 작은 스캐너로
+    처리한다 - 정규식으로는 이 구분이 안 된다.
+    """
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c in ('"', "'", "`"):  # 문자열·템플릿 리터럴은 통째로 보존
+            out.append(c)
+            i += 1
+            while i < n:
+                if text[i] == "\\":       # 이스케이프는 두 글자를 한 번에
+                    out.append(text[i:i + 2])
+                    i += 2
+                    continue
+                out.append(text[i])
+                i += 1
+                if text[i - 1] == c:
+                    break
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            end = text.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            continue
+        if text.startswith("<!--", i):
+            end = text.find("-->", i + 4)
+            i = n if end == -1 else end + 3
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _extract_calls(text: str) -> set:
+    text = _strip_comments(text)
     return {_normalize(m) for m in _TEMPLATE_URL_RE.findall(text) + _FETCH_RE.findall(text)}
 
 
@@ -128,7 +174,9 @@ def verify(api_spec: dict, design_target: str | None = None) -> dict:
     if not logs:
         logs.append(f"명세의 경로 {len(spec_paths)}개를 모두 정확히 호출함.")
 
-    sources_text = "\n".join(texts)
+    # wrapper key·디자인 토큰 검사도 주석을 뺀 본문으로 본다 - 주석에만 적힌
+    # 키를 "쓰고 있다"고 오판하면 거짓 통과가 되어 경로 오탐보다 더 위험하다.
+    sources_text = _strip_comments("\n".join(texts))
     shape_logs, shape_ok = _check_response_shape(api_spec, sources_text)
     logs += shape_logs
     logs += _check_design_tokens(sources_text, design_target)
@@ -169,6 +217,32 @@ if __name__ == "__main__":
       const books = await safeFetch(`${BASE}/books`, undefined, setError);
     """
     assert _extract_calls(wrapped) == {"/books"}
+
+    # 주석에 적힌 예시 URL은 실제 호출이 아니다 - 셋 다 무시돼야 한다.
+    commented = """
+      // 목록은 `${BASE}/fake-line`으로 부른다
+      /* 상세는 `${BASE}/fake-block` 이었다 */
+      <!-- `${BASE}/fake-html` -->
+      fetch(`${BASE}/books`);
+    """
+    assert _extract_calls(commented) == {"/books"}
+
+    # 반대로 문자열 안의 `//`(BASE 상수 등)에서 줄이 잘리면 진짜 호출을 놓친다 -
+    # 오탐보다 나쁜 미탐이라 여기가 핵심이다.
+    with_base = """
+      const BASE = "http://localhost:8080"; // 백엔드 주소
+      fetch(`${BASE}/members`);
+    """
+    assert _extract_calls(with_base) == {"/members"}
+    assert 'http://localhost:8080' in _strip_comments(with_base)
+    assert '백엔드 주소' not in _strip_comments(with_base)
+
+    # 이스케이프된 따옴표가 문자열을 조기 종료시키면 그 뒤가 통째로 어긋난다.
+    escaped = r"""
+      const msg = "그는 \"안녕\" 이라 했다"; // 주석
+      fetch(`${BASE}/loans`);
+    """
+    assert _extract_calls(escaped) == {"/loans"}
 
     lib_spec = {
         "endpoints": [
