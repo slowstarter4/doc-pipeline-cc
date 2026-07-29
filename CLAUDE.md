@@ -144,3 +144,36 @@ Windows WinNAT 예약범위라 막힘). **오케스트레이터도 서브에이�
   commerce_qwen_plan.md로 end-to-end 검증(spring만 해봤다) - 걸리는 버그는
   해당 gotchas.md에 승격. `build-app` 스킬 자체도 아직 처음부터 끝까지
   한 번에 돌려본 적은 없다(부분부분 스킬 단위로만 검증함).
+- **2026-07-28 (이어서 2)**: **`build-app` 오케스트레이터 첫 통짜 실행 성공**
+  (BACKEND_TARGET=express, FRONTEND_TARGET=react, DB_TARGET=postgres,
+  commerce_qwen_plan.md). gen-docs는 spring 검증 때 만든 산출물이 스택 무관이라
+  재사용(문서 재생성 스킵). express 도메인 10조각 병렬 디스패치 → 컴파일/기동
+  1차 성공, `verify_backend.py`가 `passed: true`를 냈지만 수동 브라우저 검증
+  중 **settlements 조각 버그를 스크립트가 놓친 것**을 발견 - SQL에서
+  quoted identifier(`"Settlement"`, `"settlementId"`)를 썼는데 schema.sql의
+  unquoted CREATE TABLE 때문에 postgres가 테이블/컬럼명을 전부 소문자로 접어
+  실제로는 안 맞는 상태였다(`relation "Settlement" does not exist`). 원인은
+  `verify_backend.py`의 `_looks_like_bug()` 휴리스틱이 Java/Spring 예외
+  패턴(`sql grammar`, `nullpointerexception` 등)만 잡고 postgres/node 에러
+  패턴은 안 잡아서 400을 "도메인 규칙 거부"로 오판했기 때문 - 이 갭을
+  `_TECHNICAL_ERROR_MARKERS`에 postgres(`does not exist`, `syntax error at or
+  near`)·node(`typeerror`, `referenceerror`, `traceback` 등) 패턴 추가로 메움.
+  settlements.js는 재디스패치로 고치고 `gen-backend-express/references/
+  gotchas.md`에 "quoted identifier 쓰지 말 것" 규칙 승격. 이후 재검증 통과,
+  프론트도 `verify_frontend.py` 통과(디자인 토큰 14/15, wrapper key 10/10).
+  브라우저로 실제 주문 생성(구매자 화면 → DB 저장)까지 확인함 - 배송비
+  안분(BR-010)까지 정상 반영(상품 10,000 + 배송비 3,000 = 13,000).
+  spring 백엔드는 `generated/backend_spring/`로 백업해두고 express로 덮어씀
+  (같은 `generated/backend/` 경로를 스택별로 재사용하는 구조라 스택 바꿔
+  돌릴 땐 이전 결과 백업 필요 - build-app 스킬에 아직 이 백업 스텝이 없다,
+  다음에 스킬 자체에 반영할지 검토).
+  **환경 이슈(로컬 머신 한정, 코드 문제 아님)**: 이 개발 머신에서 5173~5180대
+  포트가 vite/node/python 무관하게 시스템 레벨에서 EACCES(WinWSAEACCES 10013)
+  로 막힘 - WinNAT/Hyper-V/도커 관련 포트 예약으로 추정(docker postgres 기동
+  이후 발생, CLAUDE.md의 5432/5433 케이스와 같은 부류일 가능성). 8081/3000은
+  정상 바인딩됨 - `generated/frontend/vite.config.js`에 `server: { port: 3000,
+  host: "127.0.0.1" }`로 우회해뒀다. 원인 미해결(winnat 재시작 등 admin 권한
+  필요한 조치 안 해봄) - 다른 머신/세션에서는 안 나타날 수 있다.
+  **다음에 할 것**: typescript/vanilla/react-ts 나머지 3스택 조합도
+  commerce_qwen_plan.md로 검증. `build-app`의 "스택 재실행 시 이전
+  generated/backend 백업" 스텝 보강 검토.

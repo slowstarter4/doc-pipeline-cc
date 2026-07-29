@@ -174,6 +174,10 @@ _TECHNICAL_ERROR_MARKERS = (
     "sql grammar", "sqlexception", "nullpointerexception", "preparedstatementcallback",
     "classcastexception", "illegalstateexception", "runtimeexception", "stacktrace",
     "at java.", "at org.springframework", "at com.example",
+    # node/express + pg(postgres), fastapi/psycopg 계열
+    "does not exist", "syntax error at or near", "typeerror", "referenceerror",
+    "cannot read propert", "undefined is not", "at object.<anonymous>",
+    "traceback (most recent call last)",
 )
 
 

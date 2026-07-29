@@ -19,6 +19,17 @@
   라우트 핸들러를 `async`로 만들고 `pool.query(...)`에 `await`를 붙인다.
   플레이스홀더는 `?`가 아니라 `$1, $2, ...`, 결과는 `result.rows`(단건은
   `result.rows[0]`). id는 `RETURNING id`로 받는다.
+- **테이블명·컬럼명에 큰따옴표(quoted identifier)를 쓰지 않는다.** schema.sql의
+  `CREATE TABLE`이 unquoted라서 postgres가 테이블명·컬럼명을 전부 소문자로
+  접어 저장한다(`Settlement` → `settlement`, `settlementId` → `settlementid`).
+  SQL에서 `"Settlement"`, `"settlementId"`처럼 큰따옴표로 감싸면 대소문자를
+  그대로 보존해서 찾으려 하므로 실제 소문자 테이블/컬럼과 매칭이 안 돼
+  `relation "Settlement" does not exist` 에러가 난다(실측: commerce_qwen_plan
+  express 1차 생성에서 settlements.js가 이 버그로 GET /settlements가 500대신
+  postgres 에러 400을 반환 - `verify_backend.py`의 `_looks_like_bug` 휴리스틱은
+  Java/Spring 예외 패턴만 잡아서 이 postgres 에러는 못 잡고 그냥 통과시켰다,
+  수동 검토로 발견). 항상 unquoted로 쓰고 결과 row는 소문자 키로 읽는다
+  (`row.settlementid` 등), 응답 JSON만 계약대로 camelCase로 매핑한다.
 - 테이블은 오케스트레이터가 이미 만들어뒀다(schema.sql 실행) - `CREATE TABLE`을
   직접 짓지 않는다. ORM(Sequelize, Prisma 등)은 쓰지 않는다.
 - id 및 외래키(memberId, bookId 등 이름이 엔티티명+Id 형태)는 **명세가 "string"
