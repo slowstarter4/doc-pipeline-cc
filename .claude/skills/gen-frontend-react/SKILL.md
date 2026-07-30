@@ -35,7 +35,14 @@ import 구문이 안 돈다).
 - 상태는 useState/useEffect만.
 - 백엔드 주소: src/App.jsx 맨 위 const BASE = "http://localhost:포트번호";
 - URL은 항상 백틱 템플릿 리터럴 `${BASE}/경로`(계약 검사가 이 리터럴을 정규식으로
-  찾는다). path parameter는 `${BASE}/books/${id}`.
+  찾는다). path parameter는 `${BASE}/books/${id}`. **각 호출부에 전체 경로가 그
+  자리에서 그대로 보여야 한다** - 공용 fetch 헬퍼(`apiFetch(path, ...)`처럼)를
+  만들 때 절대 `path`를 별도 매개변수로 받아 헬퍼 내부에서 `` `${BASE}${path}` ``로
+  합치지 않는다(실측: 이렇게 짜면 각 호출부는 `apiFetch("/stocks", ...)`처럼
+  일반 문자열만 인자로 넘기게 되는데, 계약 검사기는 `${BASE}`가 붙은 백틱
+  리터럴만 호출로 인식하므로 모든 호출을 놓쳐 "명세 경로를 하나도 안 부름"으로
+  실패한다). 공용 헬퍼를 쓰고 싶으면 호출부에서 `` apiFetch(`${BASE}/stocks`, ...) ``
+  처럼 완성된 백틱 리터럴을 그대로 넘긴다.
 - 요청 body·응답 필드는 API 명세 필드명 그대로.
 - 모든 fetch 응답 status 확인, 실패 시 body 메시지 표시(detail/message/error
   순서로 확인 - 백엔드 스택마다 키가 다르다).

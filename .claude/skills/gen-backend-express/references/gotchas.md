@@ -19,6 +19,13 @@
   라우트 핸들러를 `async`로 만들고 `pool.query(...)`에 `await`를 붙인다.
   플레이스홀더는 `?`가 아니라 `$1, $2, ...`, 결과는 `result.rows`(단건은
   `result.rows[0]`). id는 `RETURNING id`로 받는다.
+  **boolean 컬럼도 sqlite와 똑같이 1/0 정수로 바인딩한다** - `schema.sql`이
+  postgres에서도 boolean 필드를 `INTEGER`로 만들기 때문에(스택 간 스키마
+  공유 목적), JS boolean(`true`/`false`)을 그대로 바인딩하면 postgres가
+  `column "x" is of type integer but expression is of type boolean`(42804)로
+  거부한다(실측: commerce 도메인 coupons 조각의 `used` 필드, INSERT에
+  `false`를 그대로 바인딩해 500). INSERT/UPDATE 시 `value ? 1 : 0`으로 변환,
+  응답 시 `Boolean(row.컬럼명)`으로 되돌린다.
 - **테이블명·컬럼명에 큰따옴표(quoted identifier)를 쓰지 않는다.** schema.sql의
   `CREATE TABLE`이 unquoted라서 postgres가 테이블명·컬럼명을 전부 소문자로
   접어 저장한다(`Settlement` → `settlement`, `settlementId` → `settlementid`).

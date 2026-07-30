@@ -66,6 +66,22 @@ INTEGER AUTOINCREMENT처럼 dialect별로 문법이 달라, 이전 dialect 산�
 그대로 재사용하면 컴파일/기동 단계에서야 발견되는 에러로 이어진다(실측:
 2026-07-29 fastapi/sqlite 세션에서 실제로 겪음).
 
+**DB_TARGET=postgres에서 도메인(기획문서)이 바뀌면 `doc` 데이터베이스도
+초기화해야 한다.** `schema.sql`은 `CREATE TABLE IF NOT EXISTS`라 테이블이 이미
+있으면 새 컬럼으로 안 바뀐다 - 이전 도메인이 만든 동명 테이블(예: `stock`)이
+남아있으면 새 도메인의 컬럼이 없어 `column "x" does not exist`(postgres
+42703)로 기동 후 조회 시점에야 터진다(실측: 2026-07-30, 커머스 도메인
+재생성 시 이전 세션의 `stock` 테이블 컬럼이 그대로 남아 있었음).
+`scripts/verify_backend.py`는 전용 `docverify` 데이터베이스를 매번 리셋해서
+이 문제가 없지만, **사람이 브라우저로 직접 여는 `doc` 데이터베이스는 이
+스킬도 verify도 손대지 않는다** - 도메인이 바뀌었으면 사람에게 다음을
+직접 실행하라고 안내한다(파괴적 작업이라 자동 실행 안 함):
+```bash
+docker exec -i <postgres 컨테이너> psql -U doc -d doc -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+```
+스택만 바꾸고 도메인(기획문서)이 그대로면 테이블 구조가 같으므로 이 리셋은
+필요 없다.
+
 ## 1. 문서 생성 - `gen-docs` 스킬
 
 `gen-docs` 스킬을 따라 순서대로 쓴다:
