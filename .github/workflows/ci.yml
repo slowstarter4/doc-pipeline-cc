@@ -20,8 +20,7 @@ jobs:
   # tests/fixtures/widgets/routes/에 손으로 쓴 최소 라우터로 대신한다 - 이건
   # scaffold 스크립트·verify_backend.py 자체(식별자 검증, DB 격리, happyPath
   # 러너, 포트 안전장치)의 회귀를 잡기 위한 것이지 도메인 생성 품질 검증이
-  # 아니다. fastapi/express만 다룬다(spring/typescript는 빌드가 느리고 별도
-  # 픽스처가 더 필요해 후속 과제로 남김).
+  # 아니다. 4개 백엔드 스택 x 2개 DB = 8콤보 전부 다룬다.
   e2e-widgets:
     runs-on: ubuntu-latest
     services:
@@ -41,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        backend: [fastapi, express]
+        backend: [fastapi, express, typescript, spring]
         db: [sqlite, postgres]
     steps:
       - uses: actions/checkout@v4
@@ -51,6 +50,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - uses: actions/setup-java@v4
+        if: matrix.backend == 'spring'
+        with:
+          distribution: temurin
+          java-version: "17"
       - run: pip install requests psycopg[binary]
 
       - name: 스캐폴드 생성 (fastapi)
@@ -67,16 +71,47 @@ jobs:
           mkdir -p generated/backend/routes
           cp tests/fixtures/widgets/routes/express_widgets.js generated/backend/routes/widgets.js
 
-      - name: schema.sql 생성
+      - name: 스캐폴드 생성 (typescript)
+        if: matrix.backend == 'typescript'
+        run: |
+          python scripts/gen_express_scaffold.py --groups widgets --dialect ${{ matrix.db }} --ts -o generated/backend
+          mkdir -p generated/backend/routes
+          cp tests/fixtures/widgets/routes/widgets_${{ matrix.db }}.ts generated/backend/routes/widgets.ts
+
+      - name: 스캐폴드 생성 (spring)
+        if: matrix.backend == 'spring'
+        run: |
+          cp tests/fixtures/spring_scaffold/build.gradle.${{ matrix.db }} generated/backend/build.gradle
+          cp tests/fixtures/spring_scaffold/settings.gradle generated/backend/settings.gradle
+          mkdir -p generated/backend/src/main/resources
+          cp tests/fixtures/spring_scaffold/application-${{ matrix.db }}.properties generated/backend/src/main/resources/application.properties
+          mkdir -p generated/backend/src/main/java/com/example/todo/config
+          cp tests/fixtures/spring_scaffold/TodoApplication.java generated/backend/src/main/java/com/example/todo/TodoApplication.java
+          cp tests/fixtures/spring_scaffold/config/*.java generated/backend/src/main/java/com/example/todo/config/
+          mkdir -p generated/backend/src/main/java/com/example/todo/widgets
+          cp tests/fixtures/widgets/routes/WidgetsController.java generated/backend/src/main/java/com/example/todo/widgets/
+          mkdir -p generated/backend/gradle/wrapper
+          cp assets/gradle-wrapper/gradlew generated/backend/gradlew
+          cp assets/gradle-wrapper/gradlew.bat generated/backend/gradlew.bat
+          cp assets/gradle-wrapper/gradle/wrapper/gradle-wrapper.jar generated/backend/gradle/wrapper/
+          cp assets/gradle-wrapper/gradle/wrapper/gradle-wrapper.properties generated/backend/gradle/wrapper/
+          chmod +x generated/backend/gradlew
+
+      - name: schema.sql 생성 (fastapi/express/typescript)
+        if: matrix.backend != 'spring'
         run: python scripts/schema_ddl.py tests/fixtures/widgets/data_model.json --dialect ${{ matrix.db }} -o generated/backend/schema.sql
+
+      - name: schema.sql 생성 (spring - resources 경로)
+        if: matrix.backend == 'spring'
+        run: python scripts/schema_ddl.py tests/fixtures/widgets/data_model.json --dialect ${{ matrix.db }} -o generated/backend/src/main/resources/schema.sql
 
       - name: 의존성 설치 (fastapi)
         if: matrix.backend == 'fastapi'
         run: pip install -r requirements.txt
         working-directory: generated/backend
 
-      - name: 의존성 설치 (express)
-        if: matrix.backend == 'express'
+      - name: 의존성 설치 (express/typescript)
+        if: matrix.backend == 'express' || matrix.backend == 'typescript'
         run: npm install
         working-directory: generated/backend
 

@@ -431,3 +431,71 @@ Windows WinNAT 예약범위라 막힘). **오케스트레이터도 서브에이�
   typescript+vanilla) - 우선순위 낮음. 커머스 도메인 api_spec의 happyPath는
   아직 구버전(단발) 형식이라, 그 도메인을 다시 돌릴 땐 스텝으로 재작성 필요
   (구버전은 스텝 1개로 감싸져 돌긴 하지만 커버리지가 예전 그대로다).
+- **2026-07-30**: **codex 리뷰 6건 반영 + plan-intake e2e + 백엔드×프론트
+  12칸 페어링 완주 + CI 실행 매트릭스 8콤보 구축.**
+  ① 별도 리뷰 문서(`IMPROVEMENT_PLAN.md`, 이후 반영 완료돼 삭제)의 지적 6건을
+  전부 고쳤다: fastapi/spring/express 미처리 예외를 500+일반메시지로(도메인
+  거부는 explicit 4xx만 인정, 전역 핸들러는 더 이상 400 안전망이 아님) -
+  `gen_fastapi_scaffold.py`·`gen-backend-spring/SKILL.md`·`gen-backend-express`
+  gotchas 갱신. `verify_backend.py`는 postgres 검증을 전용 `docverify` DB로
+  완전 격리(매 실행마다 스키마 리셋, 사람이 쓰는 `doc` DB는 절대 안 건드림),
+  sqlite 삭제도 `*.db` 글롭 대신 `app.db` 하나로 좁혔다. `schema_ddl.py`에
+  식별자 정규식 검증+테이블명 충돌 검사 추가, happyPath seed도 SQL 삽입 전
+  검증하게 함. `verify_frontend.py`는 (method, path) 단위 계약 비교로
+  확장하고(POST를 GET으로 잘못 부르면 이제 잡는다), URL이 변수를 거쳐 method를
+  못 정하는 호출은 "검증 불가"로 분리 보고. `tests/test_scripts_selfcheck.py`
+  (pytest로 8개 스크립트 self-check 묶음)와 `.github/workflows/ci.yml` 신설.
+  CORS를 fastapi/express/typescript는 `CORS_ORIGINS` env, spring은
+  `app.cors.allowed-origins` 프로퍼티로 바꾸고 `.env.example` 생성.
+  ② **`plan-intake` 스킬을 실제 대화로 6질문→조립→승인→저장까지 처음부터
+  끝까지 e2e 검증**(이전엔 질문 1개까지만 해봤었음) - 커머스 주문/정산
+  도메인(상품재고·주문·회원·배송·환불·쿠폰·적립금·정산 8엔티티)을 새로
+  만들어 `examples/commerce_intake_plan.md`로 저장, 그대로 `build-app`
+  (typescript+react-ts+postgres)까지 이어 돌려 실제 브라우저 골든패스 확인.
+  이 과정에서 실버그 2건 발견해 gotchas 승격: coupon `used`(boolean) 컬럼을
+  JS boolean 그대로 postgres에 바인딩해 42804 에러(0/1 정수 바인딩 필요는
+  sqlite뿐 아니라 postgres도 마찬가지라고 명시), 프론트 `apiFetch(path, role)`
+  헬퍼가 BASE와 path를 헬퍼 내부에서 합쳐서 계약검사기가 호출을 하나도 못 찾음
+  (호출부에 완성된 백틱 URL을 그대로 넘기라고 `gen-frontend-react` 갱신).
+  ③ **postgres 도메인 전환 시 실 데이터 잔존 문제 발견**: `doc` DB에 예전
+  도메인(`stock` 테이블 등)이 남아있으면 `CREATE TABLE IF NOT EXISTS`가
+  새 스키마로 안 바뀌어 `column "x" does not exist`로 브라우저 실사용 중
+  터졌다 - `build-app` 0단계에 "도메인 바뀌고 postgres면 `doc` DB도
+  `DROP SCHEMA public CASCADE`로 리셋하라"는 안내(파괴적 작업이라 자동화
+  안 함, 사람에게 안내만) 추가.
+  ④ **gen-docs 역할범위 판단 버그 실측**: requirements.md의 "관리자는 재고
+  목록을 조회할 수 있다"만 보고 `GET /stocks` rules를 ADMIN 전용으로
+  좁혔는데, 화면설계서엔 구매자 화면도 주문 전 재고를 봐야 해서 403으로
+  막혔다. gen-docs에 "원문이 명시적으로 배제할 때만 단일 역할로 좁힌다,
+  screen_design.md에서 그 데이터를 보는 다른 역할이 있는지 먼저 확인" 규칙과
+  6단계 자기검토에 "화면별 호출 엔드포인트 vs rules 허용 역할 대조" 체크,
+  happyPath에 "비-ADMIN 역할 화면은 최소 한 스텝을 그 역할 헤더로 호출"
+  요구를 추가했다.
+  ⑤ **백엔드×프론트 12칸 페어링 전부 실행 검증 완주**(fastapi+react-ts,
+  spring+react, express+vanilla, typescript+vanilla - 나머지 8칸은 이전
+  세션들에서 이미 검증됨). library_plan_v2 도메인(3엔티티, 18스텝
+  happyPath) 재사용으로 비용 절감. express+vanilla 페어링에서 실버그 1건:
+  `members.js`가 `const db = require('../db')`로 `{ db }` 모듈 전체를
+  통째로 받아 `db.prepare is not a function` - `gen-backend-express` gotchas에
+  "반드시 `const { db } = require('../db')`로 구조분해" 명시.
+  ⑥ **`generated/docs_commerce`(예전 commerce_qwen 도메인)의 happyPath를
+  단발→24스텝으로 재작성**(주문 생성 거부/성공, C1/C5/C7/C9/C20/C21/C22
+  role 체크, 재고부족·금액불일치·버전충돌 거부케이스). 이 도메인은 백엔드가
+  없어 실행 검증은 못 하고 JSON 스키마 유효성만 확인 - 아이템 단위
+  취소/반품/교환, 배송상태 PUT, PG 웹훅 서명, 정산 hold/release는 상태값·
+  서명 인프라가 문서에 없어 스텝으로 못 만들어 커버리지에서 뺐다(정직하게
+  기록).
+  ⑦ **CI e2e 매트릭스를 fastapi/express 2스택→4스택(+spring/typescript) x
+  2DB = 8콤보로 확장.** spring은 스캐폴드가 파이썬 스크립트가 아니라 스킬
+  문서를 오케스트레이터가 손으로 여러 파일 써서 만드는 구조라
+  `tests/fixtures/spring_scaffold/`에 build.gradle(dialect별)·
+  application.properties(dialect별)·TodoApplication.java·config 3종을
+  픽스처로 만들어 CI에서 복사한다. typescript는 db.ts가 dialect별로
+  `db` 또는 `pool` 중 하나만 export하는데(TS 정적 named import라 없는
+  심볼은 컴파일 에러) `widgets_sqlite.ts`/`widgets_postgres.ts`로 파일을
+  아예 분리했다. 8콤보 전부 로컬에서 먼저 통과 확인 후 CI에 반영.
+  ⑧ `generated/` 안에 쌓여있던 백업 폴더(스택 전환 스냅샷) 27개+로그
+  11개를 정리 - 활성 `backend`/`frontend`/`docs`(커머스 도메인)만 남김.
+  **남은 것**: 없음 - 이번 리뷰·개선 사이클로 다룰 항목은 전부 마무리됨.
+  다음은 새 도메인/스택 조합을 실제로 써보면서 나오는 이슈를 그때그때
+  gotchas에 승격시키는 통상 운영 사이클.

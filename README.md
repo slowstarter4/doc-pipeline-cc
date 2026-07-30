@@ -22,8 +22,11 @@ cd doc-pipeline-cc
 # 2. DB 기동 (postgres 쓸 경우, 사람이 직접)
 cd db && docker compose up -d && cd ..
 
-# 3. 오케스트레이터 실행
+# 3-a. 완성된 기획문서가 있으면 바로:
 /build-app examples/commerce_qwen_plan.md
+
+# 3-b. 기획문서가 없으면(아이디어만 있을 때) 질의응답으로 먼저 초안을 잡는다:
+/plan-intake
 ```
 
 `BACKEND_TARGET`(spring/express/fastapi/typescript), `FRONTEND_TARGET`
@@ -32,11 +35,17 @@ cd db && docker compose up -d && cd ..
 
 ## 검증 현황
 
-- **spring + (프론트 미검증) + postgres**: 도메인 10조각 병렬 생성, 컴파일 1차
-  성공, `verify-backend` 통과.
-- **express + react + postgres**: `build-app` 전체 파이프라인 첫 통짜 실행
-  성공(문서~백엔드~프론트~검증~브라우저 수동 확인까지). 과정에서 발견한 버그와
-  수정 내역은 `CLAUDE.md`의 진행 상태 로그 참고.
-- **fastapi/typescript/vanilla/react-ts**: 스캐폴드는 있으나 end-to-end 미검증.
+- **백엔드 4종(fastapi/spring/express/typescript) × 프론트 3종
+  (vanilla/react/react-ts) = 12칸 페어링 전부 실행 검증 완료**(코드 생성 →
+  `verify_backend.py`/`verify_frontend.py` → 대부분 브라우저 골든패스까지
+  확인). DB는 sqlite/postgres 둘 다 여러 스택에서 확인됨.
+- **`plan-intake` → `build-app` 전체 파이프라인 e2e 검증**: 6질문→조립→승인→
+  저장부터 문서생성·병렬 코드생성·검증까지 실사용으로 한 바퀴 확인.
+- **CI**(`.github/workflows/ci.yml`): 스크립트 self-check(pytest) + 백엔드
+  4종×DB 2종 = 8콤보 실제 스캐폴드 생성→기동→`verify_backend.py` e2e 매트릭스
+  (손으로 쓴 최소 `widgets` 도메인 픽스처 사용 - 도메인 생성 품질이 아니라
+  스캐폴드 스크립트·검증 엔진 자체의 회귀를 잡는 용도).
+- 실사용 중 발견한 버그·설계 결함과 그 수정 내역은 `CLAUDE.md`의 진행 상태
+  로그(각 스택 `gotchas.md`로도 승격됨) 참고.
 
 자세한 설계 근거, 각 스택별 함정(gotchas), 다음 할 일은 `CLAUDE.md`를 본다.
