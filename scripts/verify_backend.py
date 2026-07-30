@@ -36,9 +36,35 @@ POLL_INTERVAL = 0.5
 TEST_TIMEOUT = 180
 
 # gen_fastapi_scaffold.py/gen_express_scaffold.py가 생성 백엔드에 박아넣는 것과
-# 같은 고정값(db/docker-compose.yml 참고) - 여기서도 그대로 접속해 happyPath
-# fixture를 시딩한다.
+# 같은 고정값(db/docker-compose.yml 참고) - 사람이 직접 기동하는 로컬 개발 DB다.
 _POSTGRES_URL = "postgresql://doc:doc@localhost:55432/doc"
+
+# 검증은 이 DB를 절대 안 쓴다 - 전용 데이터베이스에서만 시딩·리셋한다. 매 실행마다
+# public 스키마를 통째로 지우고 새로 만드므로(항상 버려도 되는 자리), 사람의 로컬
+# 개발 데이터(_POSTGRES_URL)는 검증이 손대지 않는다.
+_VERIFY_PG_DB = "docverify"
+_VERIFY_POSTGRES_URL = "postgresql://doc:doc@localhost:55432/" + _VERIFY_PG_DB
+
+
+def _ensure_verify_pg_db() -> None:
+    import psycopg
+
+    admin = psycopg.connect(_POSTGRES_URL.rsplit("/", 1)[0] + "/doc", autocommit=True)
+    try:
+        exists = admin.execute(
+            "SELECT 1 FROM pg_database WHERE datname = %s", (_VERIFY_PG_DB,)
+        ).fetchone()
+        if not exists:
+            admin.execute(f"CREATE DATABASE {_VERIFY_PG_DB}")
+    finally:
+        admin.close()
+
+    conn = psycopg.connect(_VERIFY_POSTGRES_URL, autocommit=True)
+    try:
+        conn.execute("DROP SCHEMA public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+    finally:
+        conn.close()
 
 
 @dataclass
@@ -131,11 +157,14 @@ def _first_create(api_spec: dict) -> "tuple[str, dict] | None":
     return None
 
 
-def _start_server(spec: LaunchSpec):
+def _start_server(spec: LaunchSpec, env: "dict | None" = None):
     SERVER_LOG.parent.mkdir(parents=True, exist_ok=True)
     log = SERVER_LOG.open("w", encoding="utf-8", errors="replace")
     cmd = " ".join(spec.start) if spec.start_shell else spec.start
-    proc = subprocess.Popen(cmd, cwd=BACKEND_DIR, stdout=log, stderr=subprocess.STDOUT, shell=spec.start_shell)
+    full_env = {**os.environ, **env} if env else None
+    proc = subprocess.Popen(
+        cmd, cwd=BACKEND_DIR, stdout=log, stderr=subprocess.STDOUT, shell=spec.start_shell, env=full_env,
+    )
     proc._verify_log = log
     return proc
 
@@ -283,11 +312,31 @@ def _run_contract_tests(base_url: str) -> "tuple[list[str], list[str]]":
     return ["계약 테스트 실패:\n" + (run.stdout or "")[-3000:] + (f"\n[stderr]\n{run.stderr[-500:]}" if run.stderr else "")], []
 
 
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_seed_identifiers(seed: list[dict]) -> str | None:
+    """seed의 table/column명이 SQL 식별자로 안전한지 확인한다 - api_spec.json의
+    happyPath는 LLM이 쓰므로 f-string으로 그대로 SQL에 꽂기 전에 여기서 막는다.
+    문제 있으면 에러 메시지, 없으면 None."""
+    for row in seed:
+        table = row.get("table", "")
+        if not _IDENTIFIER_RE.match(table):
+            return f"happyPath seed의 테이블명이 안전하지 않음: {table!r}"
+        for col in row.get("columns", {}):
+            if not _IDENTIFIER_RE.match(col):
+                return f"happyPath seed의 컬럼명이 안전하지 않음: {col!r} (table={table!r})"
+    return None
+
+
 def _seed_rows(db: str, seed: list[dict]) -> str | None:
     """happyPath fixture의 seed 로우를 DB에 직접 심는다. 실패하면 에러 메시지
     문자열을 돌려주고(None이면 성공), 항상 unquoted identifier로 쓴다 - postgres는
     unquoted면 대소문자와 무관하게 항상 소문자로 접어서 schema.sql이 만든 실제
     테이블과 저절로 맞는다(gotchas.md의 quoted identifier 함정을 안 밟는다)."""
+    bad = _validate_seed_identifiers(seed)
+    if bad:
+        return bad
     try:
         if db == "sqlite":
             db_files = list(BACKEND_DIR.glob("*.db"))
@@ -308,7 +357,7 @@ def _seed_rows(db: str, seed: list[dict]) -> str | None:
         else:
             import psycopg
 
-            conn = psycopg.connect(_POSTGRES_URL)
+            conn = psycopg.connect(_VERIFY_POSTGRES_URL)
             try:
                 for row in seed:
                     cols = list(row["columns"].keys())
@@ -478,7 +527,7 @@ def _run_happy_path(base_url: str, api_spec: dict, db: str):
     return [], notes, persist
 
 
-def _check_persistence(base_url: str, api_spec: dict, proc, spec: LaunchSpec, db: str, precreated: "tuple[str, object, str] | None" = None):
+def _check_persistence(base_url: str, api_spec: dict, proc, spec: LaunchSpec, db: str, precreated: "tuple[str, object, str] | None" = None, env: "dict | None" = None):
     if precreated is not None:
         path, new_id, id_field = precreated
     else:
@@ -504,7 +553,7 @@ def _check_persistence(base_url: str, api_spec: dict, proc, spec: LaunchSpec, db
         return [], [note], None
 
     problems = []
-    new_proc = _start_server(spec)
+    new_proc = _start_server(spec, env)
     if not _wait_for_server(base_url, path, spec.timeout):
         _stop_server(new_proc, spec)
         problems.append(f"영속성 검사를 위해 서버를 재기동했는데 {spec.timeout}초 안에 안 떴음.")
@@ -540,6 +589,14 @@ def verify(target: str, db: str, api_spec: dict) -> dict:
             "그 포트를 쓰는 프로세스를 직접 확인/종료한 뒤 재실행하세요.",
         }
 
+    env = None
+    if db == "postgres":
+        _ensure_verify_pg_db()
+        if target == "spring":
+            env = {"SPRING_DATASOURCE_URL": "jdbc:postgresql://localhost:55432/" + _VERIFY_PG_DB}
+        else:
+            env = {"DATABASE_URL": _VERIFY_POSTGRES_URL}
+
     proc = None
     try:
         for cmd in spec.build:
@@ -550,14 +607,18 @@ def verify(target: str, db: str, api_spec: dict) -> dict:
             if build.returncode != 0:
                 return {"passed": False, "logs": f"빌드/설치 실패 ({' '.join(cmd)}):\n{build.stderr[-2000:]}"}
 
-        for db_file in BACKEND_DIR.glob("*.db"):
-            try:
-                db_file.unlink()
-            except PermissionError:
-                pass
+        if db == "sqlite":
+            # 스캐폴드가 하드코딩한 정확히 이 파일명만 지운다(glob("*.db")로 넓게
+            # 쓸면 사람이 그 폴더에 따로 둔 무관한 .db 파일까지 지울 위험이 있다).
+            app_db = BACKEND_DIR / "app.db"
+            if app_db.exists():
+                try:
+                    app_db.unlink()
+                except PermissionError:
+                    pass
 
         probe = (_plain_get_paths(api_spec) or ["/"])[0]
-        proc = _start_server(spec)
+        proc = _start_server(spec, env)
 
         if not _wait_for_server(base_url, probe, spec.timeout):
             stderr = _stop_server(proc, spec)
@@ -584,7 +645,7 @@ def verify(target: str, db: str, api_spec: dict) -> dict:
         if test_problems:
             return {"passed": False, "logs": "\n".join(test_problems)}
         notes += test_notes
-        problems, persist_notes, proc = _check_persistence(base_url, api_spec, proc, spec, db, precreated)
+        problems, persist_notes, proc = _check_persistence(base_url, api_spec, proc, spec, db, precreated, env)
         if problems:
             return {"passed": False, "logs": "영속성 검사 실패:\n" + "\n".join(f"- {p}" for p in problems)}
 
@@ -686,5 +747,16 @@ if __name__ == "__main__":
     assert _looks_like_bug('{"detail":"buyerId는 필수입니다"}') is False
     assert _looks_like_bug('{"detail":"bad SQL grammar [SELECT ...]"}') is True
     assert _looks_like_bug('{"detail":"java.lang.NullPointerException"}') is True
+
+    # 검증용 postgres DB는 사람 로컬 개발 DB(_POSTGRES_URL, doc)와 절대 같은 이름이면
+    # 안 된다 - 이름이 같아지면 격리가 무의미해진다.
+    assert _VERIFY_PG_DB != "doc"
+    assert _VERIFY_POSTGRES_URL.endswith("/" + _VERIFY_PG_DB)
+    assert _VERIFY_POSTGRES_URL != _POSTGRES_URL
+
+    # happyPath seed의 table/column명은 SQL 식별자 규칙을 벗어나면 막혀야 한다.
+    assert _validate_seed_identifiers([{"table": "book", "columns": {"title": "x"}}]) is None
+    assert "테이블명" in _validate_seed_identifiers([{"table": "book; DROP TABLE x;--", "columns": {}}])
+    assert "컬럼명" in _validate_seed_identifiers([{"table": "book", "columns": {"a=1) OR (1=1": "x"}}])
 
     print("verify_backend self-check 통과")

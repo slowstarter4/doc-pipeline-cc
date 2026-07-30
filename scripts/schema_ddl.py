@@ -18,7 +18,22 @@ data_model.json을 쓴 뒤 이 스크립트를 Bash로 호출해 schema.sql을 �
 
 import argparse
 import json
+import re
 import sys
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def validate_identifier(name: str, kind: str) -> None:
+    """엔티티·필드명이 안전한 SQL 식별자인지 확인한다. 특수문자·공백·SQL
+    구문 조각이 그대로 CREATE TABLE 문자열에 꽂히는 걸 생성 시점에 막는다 -
+    안 걸리면 DB 실행 단계에서야 알아채기 쉬운 사고(SQL injection·구문 오류)라
+    여기서 미리 차단한다."""
+    if not name or not _IDENTIFIER_RE.match(name):
+        raise ValueError(
+            f"허용되지 않는 {kind} 이름: {name!r} - "
+            f"^[A-Za-z_][A-Za-z0-9_]*$ 규칙을 따라야 한다 (data_model.json 확인)"
+        )
 
 _DDL_TYPE_MAP = {
     "string": "TEXT",
@@ -55,6 +70,7 @@ def _table_ddl(entity: dict, pk: str) -> str:
     name = entity.get("name")
     if not name:
         return ""
+    validate_identifier(name, "엔티티")
     name = table_name(name)
 
     lines = [f"  {pk}"]
@@ -62,6 +78,7 @@ def _table_ddl(entity: dict, pk: str) -> str:
         fname = field.get("name")
         if not fname or fname == "id":
             continue  # id는 위에서 이미 넣었다. ERD가 id를 또 선언해도 무시.
+        validate_identifier(fname, "필드")
         sql_type = _DDL_TYPE_MAP.get(field.get("type"), "TEXT")
         null = " NOT NULL" if field.get("required") else ""
         lines.append(f"  {fname} {sql_type}{null}")
@@ -72,11 +89,25 @@ def _table_ddl(entity: dict, pk: str) -> str:
 
 def generate_ddl(data_model: dict, dialect: str = "sqlite") -> str:
     pk = _DIALECT_PK.get(dialect, _DIALECT_PK["sqlite"])
-    tables = [
-        ddl
-        for entity in (data_model or {}).get("entities", [])
-        if (ddl := _table_ddl(entity, pk))
-    ]
+    entities = (data_model or {}).get("entities", [])
+
+    # 서로 다른 엔티티명이 물리 테이블명 변환(예약어 접미사)을 거쳐 같은 이름으로
+    # 충돌하면(예: "order"와 "Order" 둘 다 "order_") 뒤엣것이 CREATE TABLE에서
+    # "already exists"로 조용히 씹히거나 컬럼이 뒤섞인다 - 생성 시점에 막는다.
+    seen: dict[str, str] = {}
+    for entity in entities:
+        name = entity.get("name")
+        if not name:
+            continue
+        physical = table_name(name)
+        if physical in seen and seen[physical] != name:
+            raise ValueError(
+                f"테이블명 충돌: 엔티티 {seen[physical]!r}와 {name!r}가 둘 다 "
+                f"물리 테이블명 {physical!r}로 변환됨 (data_model.json에서 이름을 바꿔라)"
+            )
+        seen[physical] = name
+
+    tables = [ddl for entity in entities if (ddl := _table_ddl(entity, pk))]
     return "\n\n".join(tables)
 
 
@@ -156,4 +187,30 @@ if __name__ == "__main__":
     assert "AUTOINCREMENT" not in pg
     assert "isAvailable INTEGER NOT NULL" in pg  # boolean 여전히 INTEGER (0/1 앱코드 유지)
     assert "dueDate TEXT NOT NULL" in pg          # date 여전히 TEXT (ISO 문자열 유지)
+    # 위험한 식별자(공백·세미콜론 등)는 DDL 생성 시점에 명확한 오류로 막는다.
+    bad_field = {"entities": [{"name": "book", "fields": [{"name": "a; DROP TABLE x;--", "type": "string"}]}]}
+    try:
+        generate_ddl(bad_field, "sqlite")
+        raise AssertionError("위험한 필드명이 통과되면 안 된다")
+    except ValueError as e:
+        assert "필드" in str(e)
+
+    bad_entity = {"entities": [{"name": "book title", "fields": []}]}
+    try:
+        generate_ddl(bad_entity, "sqlite")
+        raise AssertionError("위험한 엔티티명이 통과되면 안 된다")
+    except ValueError as e:
+        assert "엔티티" in str(e)
+
+    # 예약어 접미사 변환 결과가 겹치면(다른 엔티티끼리 같은 물리 테이블명) 막는다.
+    collide = {"entities": [
+        {"name": "order", "fields": []},
+        {"name": "order_", "fields": []},
+    ]}
+    try:
+        generate_ddl(collide, "sqlite")
+        raise AssertionError("테이블명 충돌이 통과되면 안 된다")
+    except ValueError as e:
+        assert "충돌" in str(e)
+
     print("\nschema_ddl self-check 통과 (sqlite + postgres)")

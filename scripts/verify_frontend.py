@@ -26,6 +26,10 @@ IGNORED_DIRS = {"node_modules", "dist", "build", ".vite"}
 
 _TEMPLATE_URL_RE = re.compile(r"`([^`]*\$\{\s*BASE\s*\}[^`]*)`")
 _FETCH_RE = re.compile(r"""fetch\(\s*['"]([^'"]*)['"]""")
+_METHOD_KEY_RE = re.compile(r"""method\s*:\s*['"`](GET|POST|PUT|PATCH|DELETE)['"`]""", re.IGNORECASE)
+_AXIOS_VERB_RE = re.compile(r"""axios\s*\.\s*(get|post|put|patch|delete)\s*\(\s*$""", re.IGNORECASE)
+_ASSIGNMENT_RE = re.compile(r"[=(]\s*$")  # 뒤에 오는 게 아니라 앞쪽 문맥 확인용
+_VALID_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 
 
 def _is_ignored(path: Path) -> bool:
@@ -93,6 +97,50 @@ def _extract_calls(text: str) -> set:
     return {_normalize(m) for m in _TEMPLATE_URL_RE.findall(text) + _FETCH_RE.findall(text)}
 
 
+def _preceding_kind(text: str, start: int) -> str:
+    """매칭된 URL 리터럴 바로 앞 문맥을 본다 - `fetch(url, ...)`/`axios.post(url)`처럼
+    호출의 인자로 바로 쓰였는지(call), `const url = ...`처럼 변수에 먼저 담겼는지
+    (assign, method를 나중 문장에서 찾아야 해서 정적 분석으로는 못 쫓아간다) 구분한다."""
+    j = start
+    while j > 0 and text[j - 1] in " \t\n\r":
+        j -= 1
+    if j == 0:
+        return "call"
+    ch = text[j - 1]
+    if ch in "(,":
+        return "call"
+    if ch == "=" and (j < 2 or text[j - 2] not in "=!<>"):
+        return "assign"
+    return "other"
+
+
+def _extract_call_sites(text: str) -> list:
+    """호출마다 (method, path, certain)을 뽑는다. `certain=False`는 URL이 변수를
+    거치는 등 그 자리에서 method를 못 정하는 경우 - 조용히 GET으로 단정하지 않고
+    '검증 불가'로 따로 보고한다."""
+    text = _strip_comments(text)
+    sites = []
+    for regex in (_TEMPLATE_URL_RE, _FETCH_RE):
+        for m in regex.finditer(text):
+            path = _normalize(m.group(1))
+            if _preceding_kind(text, m.start()) != "call":
+                sites.append({"path": path, "method": None, "certain": False})
+                continue
+            window_before = text[max(0, m.start() - 40):m.start()]
+            axios_m = _AXIOS_VERB_RE.search(window_before)
+            if axios_m:
+                sites.append({"path": path, "method": axios_m.group(1).upper(), "certain": True})
+                continue
+            window_after = text[m.end():m.end() + 400]
+            stop = window_after.find(";")
+            if stop != -1:
+                window_after = window_after[:stop]
+            method_m = _METHOD_KEY_RE.search(window_after)
+            method = method_m.group(1).upper() if method_m else "GET"
+            sites.append({"path": path, "method": method, "certain": True})
+    return sites
+
+
 def _list_wrapper_keys(api_spec: dict) -> set:
     keys = set()
     for ep in api_spec.get("endpoints", []):
@@ -153,26 +201,50 @@ def verify(api_spec: dict, design_target: str | None = None) -> dict:
     if not sources:
         return {"passed": False, "logs": f"{FRONTEND_OUT_DIR}에 html/js 파일이 없음."}
 
-    called = set()
+    sites = []
     texts = []
     for src in sources:
         text = src.read_text(encoding="utf-8")
         texts.append(text)
-        called |= _extract_calls(text)
+        sites += _extract_call_sites(text)
 
-    spec_paths = {_normalize(ep["path"]) for ep in api_spec.get("endpoints", [])}
-    unknown = sorted(called - spec_paths)
-    unused = sorted(spec_paths - called)
+    spec_pairs = {(ep.get("method", "").upper(), _normalize(ep["path"])) for ep in api_spec.get("endpoints", [])}
+    spec_paths = {p for _, p in spec_pairs}
+
+    known_calls = {(s["method"], s["path"]) for s in sites if s["certain"]}
+    uncertain_paths = sorted({s["path"] for s in sites if not s["certain"]})
+    called = known_calls | {(None, p) for p in uncertain_paths}
+
+    method_mismatch = sorted((m, p) for m, p in known_calls if p in spec_paths and (m, p) not in spec_pairs)
+    unknown = sorted((m, p) for m, p in known_calls if p not in spec_paths)
+    # 불확실한 호출로만 쓰인 경로는 "안 쓰는 경로"로 잘못 보고하지 않는다.
+    unused = sorted(pair for pair in spec_pairs if pair not in known_calls and pair[1] not in uncertain_paths)
 
     logs = []
     if not called:
         logs.append("API 호출을 하나도 못 찾음 - 프론트가 백엔드를 안 부르고 있거나 URL을 리터럴로 안 씀.")
+    if method_mismatch:
+        logs.append(
+            "경로는 맞지만 HTTP method가 명세와 다름 (계약 위반):\n"
+            + "\n".join(f"  - {m} {p}" for m, p in method_mismatch)
+        )
     if unknown:
-        logs.append("명세에 없는 경로를 호출함 (계약 위반):\n" + "\n".join(f"  - {p}" for p in unknown))
+        logs.append(
+            "명세에 없는 경로/method 조합을 호출함 (계약 위반):\n"
+            + "\n".join(f"  - {m} {p}" for m, p in unknown)
+        )
+    if uncertain_paths:
+        logs.append(
+            "검증 불가 (URL이 변수를 거치거나 동적으로 조립돼 method를 못 정함 - 수동 확인 필요):\n"
+            + "\n".join(f"  - {p}" for p in uncertain_paths)
+        )
     if unused:
-        logs.append("명세에 있지만 화면에서 안 쓰는 경로 (참고):\n" + "\n".join(f"  - {p}" for p in unused))
-    if not logs:
-        logs.append(f"명세의 경로 {len(spec_paths)}개를 모두 정확히 호출함.")
+        logs.append(
+            "명세에 있지만 화면에서 안 쓰는 경로 (참고):\n"
+            + "\n".join(f"  - {m} {p}" for m, p in unused)
+        )
+    if not method_mismatch and not unknown and not uncertain_paths and not unused:
+        logs.append(f"명세의 경로 {len(spec_pairs)}개를 모두 정확히 (method 포함) 호출함.")
 
     # wrapper key·디자인 토큰 검사도 주석을 뺀 본문으로 본다 - 주석에만 적힌
     # 키를 "쓰고 있다"고 오판하면 거짓 통과가 되어 경로 오탐보다 더 위험하다.
@@ -181,7 +253,8 @@ def verify(api_spec: dict, design_target: str | None = None) -> dict:
     logs += shape_logs
     logs += _check_design_tokens(sources_text, design_target)
 
-    return {"passed": bool(called) and not unknown and shape_ok, "logs": "\n".join(logs)}
+    passed = bool(called) and not unknown and not method_mismatch and shape_ok
+    return {"passed": passed, "logs": "\n".join(logs)}
 
 
 def main() -> None:
@@ -260,5 +333,47 @@ if __name__ == "__main__":
 
     assert _is_ignored(Path("generated/frontend/node_modules/react/index.js"))
     assert not _is_ignored(Path("generated/frontend/src/App.jsx"))
+
+    # method 추출: 옵션에 명시가 없으면 GET, 있으면 그 값.
+    method_html = """
+      fetch(`${BASE}/todos`);
+      fetch(`${BASE}/todos/${id}/complete`, {method: "PUT"});
+      axios.post(`${BASE}/books`, body);
+      axios.delete(`${BASE}/books/${id}`);
+    """
+    sites = _extract_call_sites(method_html)
+    got = {(s["method"], s["path"]) for s in sites if s["certain"]}
+    assert got == {
+        ("GET", "/todos"),
+        ("PUT", "/todos/{}/complete"),
+        ("POST", "/books"),
+        ("DELETE", "/books/{}"),
+    }
+
+    # URL이 변수에 먼저 담기면 method를 못 정하니 uncertain으로 분리돼야 한다.
+    indirect_html = """
+      const url = `${BASE}/orders`;
+      fetch(url, {method: "POST"});
+    """
+    indirect_sites = _extract_call_sites(indirect_html)
+    assert any(s["path"] == "/orders" and not s["certain"] for s in indirect_sites)
+
+    # verify(): 명세는 POST /orders인데 프론트가 GET으로 부르면 실패해야 한다.
+    order_spec = {"endpoints": [{"method": "POST", "path": "/orders"}]}
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        FRONTEND_OUT_DIR = Path(tmp)
+        (FRONTEND_OUT_DIR / "app.js").write_text(
+            'fetch(`${BASE}/orders`);', encoding="utf-8"
+        )
+        mismatch_report = verify(order_spec)
+        assert mismatch_report["passed"] is False
+        assert "method" in mismatch_report["logs"]
+
+        (FRONTEND_OUT_DIR / "app.js").write_text(
+            'fetch(`${BASE}/orders`, {method: "POST"});', encoding="utf-8"
+        )
+        ok_report = verify(order_spec)
+        assert ok_report["passed"] is True
 
     print("verify_frontend self-check 통과")

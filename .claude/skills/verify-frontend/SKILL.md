@@ -20,8 +20,12 @@ python scripts/verify_frontend.py --api-spec generated/docs/api_spec.json \
 
 ## 검사 3종
 
-1. **호출 경로 ↔ api_spec 경로** (계약, passed에 반영) - 명세에 없는 경로를
-   부르거나, 호출 자체가 하나도 없으면 실패.
+1. **호출 (method, 경로) ↔ api_spec (method, 경로)** (계약, passed에 반영) -
+   명세에 없는 경로를 부르거나, 경로는 맞는데 method가 다르거나(`POST /orders`를
+   `GET`으로 호출), 호출 자체가 하나도 없으면 실패. `fetch(url, {method})`의
+   method(미지정 시 GET)와 `axios.get/post/put/patch/delete(url)`의 동사를 읽는다.
+   URL이 변수를 거치는 등 그 자리에서 method를 못 정하는 호출은 실패로 안 치고
+   "검증 불가"로 따로 보고한다(수동 확인 필요).
 2. **응답 모양**(계약, passed에 반영) - 목록 응답을 감싸는 wrapper key(예:
    `{"orders": [...]}`)가 프론트 소스에 없으면 배열을 못 푸는 것으로 판단.
 3. **디자인 토큰 색** (진단만, passed에 반영 안 됨) - 색이 화면에 없는 요소용일

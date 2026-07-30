@@ -70,6 +70,7 @@ rootProject.name = 'todo'
   spring.datasource.url=jdbc:sqlite:app.db
   spring.datasource.driver-class-name=org.sqlite.JDBC
   spring.sql.init.mode=always
+  app.cors.allowed-origins=*
   ```
 - postgres:
   ```properties
@@ -79,7 +80,11 @@ rootProject.name = 'todo'
   spring.datasource.password=doc
   spring.datasource.driver-class-name=org.postgresql.Driver
   spring.sql.init.mode=always
+  app.cors.allowed-origins=*
   ```
+  (운영 배포 시 환경변수 `APP_CORS_ALLOWED_ORIGINS`로 콤마구분 allowlist를 넣으면
+  Spring Boot의 relaxed binding이 이 프로퍼티를 덮어쓴다 - `spring.datasource.url`도
+  같은 방식으로 `SPRING_DATASOURCE_URL` 환경변수로 덮어쓸 수 있다.)
 
 `generated/backend/src/main/resources/schema.sql`: `generated/docs/schema.sql`을
 그대로 복사(내용 동일, 위치만 Spring Boot 관례 경로로).
@@ -106,16 +111,20 @@ public class TodoApplication {
 ```java
 package com.example.todo.config;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 @Configuration
 public class CorsConfig implements WebMvcConfigurer {
+    @Value("${app.cors.allowed-origins:*}")
+    private String allowedOrigins;
+
     @Override
     public void addCorsMappings(CorsRegistry registry) {
         registry.addMapping("/**")
-            .allowedOrigins("*")
+            .allowedOrigins(allowedOrigins.split(","))
             .allowedMethods("*")
             .allowedHeaders("*");
     }
@@ -155,6 +164,8 @@ public class JacksonConfig {
 ```java
 package com.example.todo.config;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -166,6 +177,8 @@ import java.util.Map;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<Map<String, String>> handleValidation(MethodArgumentNotValidException ex) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
@@ -180,13 +193,16 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, String>> handleOther(Exception ex) {
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-            .body(Map.of("detail", String.valueOf(ex.getMessage())));
+        log.error("unhandled error", ex);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+            .body(Map.of("detail", "internal server error"));
     }
 }
 ```
 
-(에러 응답 키는 `detail`로 통일 - 프론트 생성 스킬이 이 키를 최우선으로 읽는다.)
+(에러 응답 키는 `detail`로 통일 - 프론트 생성 스킬이 이 키를 최우선으로 읽는다.
+도메인 규칙 위반은 `ResponseStatusException`으로 명시적 4xx를 던져야 한다 -
+`handleOther`는 더 이상 400 안전망이 아니라 500 + 일반화 메시지다.)
 
 gradle wrapper 복사:
 ```bash

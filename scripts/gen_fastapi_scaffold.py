@@ -70,6 +70,8 @@ def main_module(groups: list[str], dialect: str) -> str:
             "        conn.close()\n"
         )
     return (
+        "import logging\n"
+        "import os\n"
         "from pathlib import Path\n\n"
         "from fastapi import FastAPI, Request\n"
         "from fastapi.exceptions import RequestValidationError\n"
@@ -79,9 +81,14 @@ def main_module(groups: list[str], dialect: str) -> str:
         f"{imports}\n\n"
         '_SCHEMA_PATH = Path(__file__).with_name("schema.sql")\n'
         'SCHEMA_SQL = _SCHEMA_PATH.read_text(encoding="utf-8") if _SCHEMA_PATH.exists() else ""\n\n'
+        "logger = logging.getLogger(__name__)\n\n"
         "app = FastAPI()\n"
+        "# 운영 배포 시 CORS_ORIGINS(콤마구분)로 allowlist를 지정한다 - 안 주면\n"
+        "# 개발 편의상 전체 허용(*)으로 동작한다.\n"
+        '_cors_origins_env = os.environ.get("CORS_ORIGINS")\n'
+        '_cors_origins = [o.strip() for o in _cors_origins_env.split(",")] if _cors_origins_env else ["*"]\n'
         "app.add_middleware(\n"
-        '    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]\n'
+        '    CORSMiddleware, allow_origins=_cors_origins, allow_methods=["*"], allow_headers=["*"]\n'
         ")\n\n\n"
         "def init_db() -> None:\n"
         f"{init_body}\n\n"
@@ -93,9 +100,17 @@ def main_module(groups: list[str], dialect: str) -> str:
         '    return JSONResponse(status_code=400, content={"detail": str(exc)})\n\n\n'
         "@app.exception_handler(Exception)\n"
         "async def _unhandled(request: Request, exc: Exception):\n"
-        '    return JSONResponse(status_code=400, content={"detail": str(exc)})\n\n\n'
+        '    logger.exception("unhandled error on %s %s", request.method, request.url.path)\n'
+        '    return JSONResponse(status_code=500, content={"detail": "internal server error"})\n\n\n'
         f"{includes}\n"
     )
+
+
+def env_example(dialect: str) -> str:
+    lines = ['CORS_ORIGINS=https://example.com']
+    if dialect == "postgres":
+        lines.append(f'DATABASE_URL={_DATABASE_URL}')
+    return "\n".join(lines) + "\n"
 
 
 def write_scaffold(out_dir: Path, groups: list[str], dialect: str) -> None:
@@ -105,6 +120,7 @@ def write_scaffold(out_dir: Path, groups: list[str], dialect: str) -> None:
     (out_dir / "main.py").write_text(main_module(groups, dialect), encoding="utf-8")
     deps = "fastapi\nuvicorn\n" + ("psycopg[binary]\n" if dialect == "postgres" else "")
     (out_dir / "requirements.txt").write_text(deps, encoding="utf-8")
+    (out_dir / ".env.example").write_text(env_example(dialect), encoding="utf-8")
 
 
 def main() -> None:
@@ -131,4 +147,11 @@ if __name__ == "__main__":
     for d in ("sqlite", "postgres"):
         compile(main_module(["orders"], d), "main.py", "exec")
         compile(db_module(d), "db.py", "exec")
+
+    assert "CORS_ORIGINS" in main_src
+    assert 'allow_origins=["*"]' not in main_src  # 하드코딩 와일드카드 제거됐는지
+    assert "internal server error" in main_src
+    assert "DATABASE_URL=" in env_example("postgres")
+    assert "DATABASE_URL=" not in env_example("sqlite")
+
     print("gen_fastapi_scaffold self-check 통과")

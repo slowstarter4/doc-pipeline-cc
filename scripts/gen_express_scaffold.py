@@ -72,7 +72,9 @@ def server_module(groups: list[str], dialect: str, ts: bool) -> str:
             f"{db_import}\n"
             f"{imports}\n\n"
             "const app = express();\n"
-            "app.use(cors());\n"
+            "// 운영 배포 시 CORS_ORIGIN(콤마구분)으로 allowlist를 지정한다 - 안 주면\n"
+        "// 개발 편의상 전체 허용('*')으로 동작한다.\n"
+        "app.use(cors({ origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : '*' }));\n"
             "app.use(express.json());\n\n"
             f"{uses}\n\n"
             "async function start() {\n"
@@ -98,7 +100,9 @@ def server_module(groups: list[str], dialect: str, ts: bool) -> str:
         f"{db_import}\n"
         f"{imports}\n\n"
         "const app = express();\n"
-        "app.use(cors());\n"
+        "// 운영 배포 시 CORS_ORIGIN(콤마구분)으로 allowlist를 지정한다 - 안 주면\n"
+        "// 개발 편의상 전체 허용('*')으로 동작한다.\n"
+        "app.use(cors({ origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : '*' }));\n"
         "app.use(express.json());\n\n"
         f"{uses}\n\n"
         "async function start() {\n"
@@ -148,12 +152,20 @@ def package_json(dialect: str, ts: bool) -> str:
     )
 
 
+def env_example(dialect: str) -> str:
+    lines = ["CORS_ORIGIN=https://example.com"]
+    if dialect == "postgres":
+        lines.append(f"DATABASE_URL={_DATABASE_URL}")
+    return "\n".join(lines) + "\n"
+
+
 def write_scaffold(out_dir: Path, groups: list[str], dialect: str, ts: bool) -> None:
     ext = "ts" if ts else "js"
     (out_dir / "routes").mkdir(parents=True, exist_ok=True)
     (out_dir / f"db.{ext}").write_text(db_module(dialect, ts), encoding="utf-8")
     (out_dir / f"server.{ext}").write_text(server_module(groups, dialect, ts), encoding="utf-8")
     (out_dir / "package.json").write_text(package_json(dialect, ts), encoding="utf-8")
+    (out_dir / ".env.example").write_text(env_example(dialect), encoding="utf-8")
     if ts:
         (out_dir / "tsconfig.json").write_text(
             '{\n  "compilerOptions": {\n    "target": "ES2020",\n    "module": "commonjs",\n'
@@ -190,4 +202,10 @@ if __name__ == "__main__":
     assert "db.exec(ddl)" in ts
     pkg = package_json("postgres", ts=True)
     assert '"pg"' in pkg and '"@types/pg"' in pkg
+
+    assert "app.use(cors());" not in js
+    assert "CORS_ORIGIN" in js
+    assert "DATABASE_URL=" in env_example("postgres")
+    assert "DATABASE_URL=" not in env_example("sqlite")
+
     print("gen_express_scaffold self-check 통과")
