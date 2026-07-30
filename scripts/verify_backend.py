@@ -231,10 +231,13 @@ def _id_field_name(api_spec: dict, method: str, path: str) -> str:
 # 요청도 이 헤더를 보내야 필터 파라미터 없이도 대부분의 목록 GET을 통과한다.
 _SMOKE_HEADERS = {"X-User-Type": "ADMIN"}
 
-# GlobalExceptionHandler는 미처리 예외까지 400으로 바꿔서 응답한다(500을 클라이언트에
-# 노출하지 않는 설계) - 그래서 진짜 서버 버그(SQL 문법 오류, NPE 등)도 상태코드만
-# 보면 "도메인 규칙 거부"와 구분이 안 된다. 메시지에 이런 기술적 예외 흔적이 있으면
-# 상태코드가 4xx여도 문제로 친다.
+# 2026-07-30 이후로는 "미처리 예외=500+일반메시지, 도메인 거부=explicit 4xx"
+# 계약이라 원리적으로는 상태코드만으로 구분된다 - 이 마커 목록은 이제 주
+# 방어선이 아니라 이중 안전망이다(스택별 서브에이전트가 실수로 예외를 삼켜
+# 4xx로 감싸버리는 경우까지 잡기 위함). 예전엔 GlobalExceptionHandler류가
+# 미처리 예외까지 400으로 바꿔서 응답해 상태코드만으론 "도메인 규칙 거부"와
+# "진짜 버그"가 구분이 안 됐다 - 그때 이 휴리스틱이 실제로 SQL 바인딩 버그를
+# 잡아낸 이력이 있어 계약이 바뀐 뒤에도 안전망으로 남겨뒀다.
 _TECHNICAL_ERROR_MARKERS = (
     "sql grammar", "sqlexception", "nullpointerexception", "preparedstatementcallback",
     "classcastexception", "illegalstateexception", "runtimeexception", "stacktrace",
