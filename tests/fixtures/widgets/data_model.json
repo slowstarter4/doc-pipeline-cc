@@ -1,0 +1,11 @@
+{
+  "entities": [
+    {
+      "name": "widget",
+      "fields": [
+        {"name": "name", "type": "string", "required": true},
+        {"name": "quantity", "type": "number", "required": true}
+      ]
+    }
+  ]
+}

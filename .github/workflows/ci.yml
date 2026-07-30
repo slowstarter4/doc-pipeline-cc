@@ -14,3 +14,71 @@ jobs:
           python-version: "3.12"
       - run: pip install pytest requests
       - run: python -m pytest tests/ -v
+
+  # 실제 스캐폴드 생성 -> 설치 -> 기동 -> verify_backend.py까지 도는 e2e 매트릭스.
+  # LLM 서브에이전트가 쓸 라우터 코드는 CI에서 재현할 수 없으므로,
+  # tests/fixtures/widgets/routes/에 손으로 쓴 최소 라우터로 대신한다 - 이건
+  # scaffold 스크립트·verify_backend.py 자체(식별자 검증, DB 격리, happyPath
+  # 러너, 포트 안전장치)의 회귀를 잡기 위한 것이지 도메인 생성 품질 검증이
+  # 아니다. fastapi/express만 다룬다(spring/typescript는 빌드가 느리고 별도
+  # 픽스처가 더 필요해 후속 과제로 남김).
+  e2e-widgets:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: doc
+          POSTGRES_PASSWORD: doc
+          POSTGRES_DB: doc
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [fastapi, express]
+        db: [sqlite, postgres]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: pip install requests psycopg[binary]
+
+      - name: 스캐폴드 생성 (fastapi)
+        if: matrix.backend == 'fastapi'
+        run: |
+          python scripts/gen_fastapi_scaffold.py --groups widgets --dialect ${{ matrix.db }} -o generated/backend
+          mkdir -p generated/backend/routers
+          cp tests/fixtures/widgets/routes/fastapi_widgets.py generated/backend/routers/widgets.py
+
+      - name: 스캐폴드 생성 (express)
+        if: matrix.backend == 'express'
+        run: |
+          python scripts/gen_express_scaffold.py --groups widgets --dialect ${{ matrix.db }} -o generated/backend
+          mkdir -p generated/backend/routes
+          cp tests/fixtures/widgets/routes/express_widgets.js generated/backend/routes/widgets.js
+
+      - name: schema.sql 생성
+        run: python scripts/schema_ddl.py tests/fixtures/widgets/data_model.json --dialect ${{ matrix.db }} -o generated/backend/schema.sql
+
+      - name: 의존성 설치 (fastapi)
+        if: matrix.backend == 'fastapi'
+        run: pip install -r requirements.txt
+        working-directory: generated/backend
+
+      - name: 의존성 설치 (express)
+        if: matrix.backend == 'express'
+        run: npm install
+        working-directory: generated/backend
+
+      - name: verify_backend.py 실행
+        run: python scripts/verify_backend.py --target ${{ matrix.backend }} --db ${{ matrix.db }} --api-spec tests/fixtures/widgets/api_spec.json
