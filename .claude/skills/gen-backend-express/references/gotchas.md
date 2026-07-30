@@ -9,7 +9,13 @@
   같은 서드파티 sqlite 패키지 금지 - npm 의존성·네이티브 빌드가 필요 없다).
   `const { DatabaseSync } = require('node:sqlite'); const db = new
   DatabaseSync('app.db');`로 연다(오케스트레이터가 db.js에 이미 넣어뒀다 - 조각은
-  `require('../db')`로만 가져온다). **동기 API다** - async/await 없이
+  `require('../db')`로만 가져온다). **`db.js`는 `module.exports = { db }`로
+  내보낸다 - 조각에서 반드시 구조분해로 `const { db } = require('../db');`
+  꺼내 쓴다.** `const db = require('../db');`처럼 통째로 받으면 `db`가 실제로는
+  `{ db: DatabaseSync }` 객체가 되어 `db.prepare(...)`가
+  `TypeError: db.prepare is not a function`으로 즉시 죽는다(실측: 2026-07-30,
+  library 도메인 express+vanilla 페어링 검증에서 members 조각이 이 실수로
+  GET/POST /members 둘 다 500). **동기 API다** - async/await 없이
   `db.prepare(sql).run(...)/.get(...)/.all(...)`로 직접 호출한다. id는
   `lastInsertRowid`로 받는다(JS 카운터 금지). boolean은 1/0으로 바인딩,
   응답 시 `Boolean(value)`로 변환. **id·외래키를 `String()`으로 감싸지 않는다**
