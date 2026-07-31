@@ -293,8 +293,19 @@ ground truth를 명세에 박아서, `verify-backend`가 더미 대신 이걸로
 
 ### 6. 자기 검토 (원본 대조)
 
-api_spec.json을 다 쓴 뒤, **원본 기획문서를 한 번 더 훑어서** 다음을 스스로
-점검한다:
+api_spec.json을 다 쓴 뒤, 먼저 결정적 체커를 돌린다:
+
+```bash
+python scripts/check_fixture_coverage.py generated/docs/api_spec.json
+```
+
+rules 있는 endpoint인데 happyPath가 아예 안 건드리거나(스텝 없음), 거부 조건으로
+보이는 rule인데 4xx 스텝이 없거나, 성공(2xx) 스텝이 없으면 실패로 찍는다 - LLM
+자기검토가 놓친 "명백히 안 다룬 rule"만 잡는 안전망이다(완벽한 의미론적 커버리지
+검증은 아니다). 실패하면 그 자리에서 happyPath를 Edit로 보완하고 통과할 때까지
+반복한다.
+
+그다음 **원본 기획문서를 한 번 더 훑어서** 다음을 스스로 점검한다:
 - 화면정의에 있는 입력 항목이 ERD·API 요청 스키마에 다 반영됐는가
 - 권한 매트릭스의 역할 제한이 관련 엔드포인트의 rules에 다 반영됐는가
 - **`screen_design.md`의 화면마다 "이 화면 역할이 실제로 부르는 엔드포인트
