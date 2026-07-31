@@ -73,14 +73,40 @@ Playwright e2e가 LLM 없이 자동으로 셀렉터를 만들 수 있다.
 예: `PUT /widgets/{id}` → `put-widgets-id`, `GET /orders/{orderId}/items` →
 `get-orders-orderid-items`.
 
-- 엔드포인트를 호출하는 폼: `data-testid="{slug}-form"`
+**path parameter 없는 엔드포인트** (컬렉션 단위 - 목록 조회, 생성):
+- 호출하는 폼: `data-testid="{slug}-form"`
 - 폼의 각 입력 필드(request의 필드명 그대로, camelCase 유지): `data-testid="{slug}-field-{필드명}"`
 - 제출 버튼: `data-testid="{slug}-submit"`
 - 에러 메시지 영역: `data-testid="{slug}-error"`
 - 목록(GET, 배열/wrapper 응답) 컨테이너: `data-testid="{slug}-list"`
 - 목록의 각 항목 루트(여러 개 반복돼도 됨, 유일할 필요 없음): `data-testid="{slug}-item"`
 - 항목 안에서 값을 확인해야 하는 필드: testid 대신 `data-field="{필드명}"` 속성
-  (item이 여러 개라 testid를 고유하게 못 주므로 속성으로 스코프 좁힘)
+  (item이 여러 개라 testid를 고유하게 못 주므로 속성으로 스코프 좁힘). **id
+  필드는 항상 `data-field="id"`로 노출한다** - e2e가 "방금 만든 게 몇 번
+  아이템인지" 알 방법이 이것뿐이다.
+
+**path parameter 있는 엔드포인트** (`{id}` 등 - 개별 수정/삭제): 전용 폼을 따로
+안 만들고, **그 리소스의 목록 아이템(위 `{slug}-item`) 안에** 인라인으로 둔다 -
+사용자가 실제로 "이 항목을 수정한다"고 클릭하는 자리이지 별도 화면이 아니기
+때문이다. `{slug}`는 이 엔드포인트 자신의 method+path로 계산한다(목록 엔드포인트
+slug와 다름 - 예: 목록은 `get-widgets-item`, 수정 액션은 `put-widgets-id-*`):
+- 그 아이템 안의 입력 필드: `data-testid="{slug}-field-{필드명}"`
+- 그 아이템 안의 제출(또는 삭제) 버튼: `data-testid="{slug}-submit"`
+- 에러 메시지: `data-testid="{slug}-error"` (아이템 안 또는 전역, 아이템 안 우선)
+
+존재하지 않는 id를 대상으로 한 거부 케이스(예: `PUT /widgets/999999` → 404)는
+UI에 그 id로 갈 항목 자체가 없으므로 **e2e가 자동으로 검증을 건너뛴다** - 정상
+동작이다, 별도 조치 불필요.
+
+**화면이 여러 개로 나뉘어 있으면**(역할 토글, 사이드 nav 등 - 한 번에 모든
+엔드포인트가 DOM에 안 잡히는 구조): 그 전환 버튼에도 testid를 준다.
+- 역할 토글 버튼: `data-testid="role-{역할명소문자}"` (예: `role-buyer`, `role-admin`)
+- 화면 전환(사이드 nav 등) 버튼: `data-testid="nav-{화면키}"`. 화면키는 자유롭게
+  정하되, **그 화면이 다루는 엔드포인트 경로의 세그먼트 중 하나와 반드시
+  일치시킨다**(예: `PUT /shipments/{id}`를 다루는 화면이면 화면키에 `shipments`가
+  있어야 한다) - e2e가 경로 세그먼트를 그대로 nav testid 후보로 써서 클릭해보기
+  때문에, 화면키가 API 경로와 무관한 이름(예: "배송화면"의 화면키를 `delivery`로)이면
+  e2e가 그 화면을 못 찾는다.
 
 한 화면이 API 명세에 없는 버튼·장식 요소를 더 갖는 건 상관없다 - 이 규칙은
 API 계약과 직접 연결된 요소에만 적용한다.

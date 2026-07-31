@@ -37,6 +37,25 @@ python scripts/verify_frontend.py --api-spec generated/docs/api_spec.json \
 도메인 조각화가 없으므로 전체를 다시 씀 - 백엔드처럼 부분 재시도가 없다).
 3회 실패하면 사람에게 보고하고 멈춘다.
 
+## e2e (선택, Playwright로 실제 브라우저 조작)
+
+`scripts/verify_frontend_e2e.py`는 정적 검사보다 한 단계 더 나간다 - 실제
+브라우저로 happyPath fixture를 UI 클릭으로 재현해 통과하는지 본다. `pip install
+playwright && playwright install chromium` 1회 필요. 전제조건은
+`gen-frontend-*` SKILL.md의 data-testid 컨벤션을 프론트가 지켰다는 것 -
+안 지켰으면 셀렉터를 못 찾아 실패로 나온다(그 자체가 컨벤션 위반 신호).
+
+```bash
+python scripts/verify_frontend_e2e.py --api-spec generated/docs/api_spec.json \
+  --url http://localhost:5173   # vanilla는 정적 서버(예: python -m http.server) 필요
+```
+
+`PUT/DELETE /x/{id}`처럼 path parameter가 있는 스텝은 목록 아이템 인라인으로
+찾는다 - 존재하지 않는 id로 4xx를 유도하는 스텝(예: `/widgets/999999`)은 UI에
+그 항목 자체가 없어 **자동으로 건너뛴다**(실패 아님, 정상 동작). 실행 전에
+프론트(와 필요하면 백엔드)가 이미 떠 있어야 한다 - 이 스크립트는 서버를
+안 띄운다(`verify-backend`/사람이 먼저 기동).
+
 ## 함께 확인할 것 (스크립트가 못 잡는 것)
 
 - CORS: 계약(api_spec)에 안 적히지만 없으면 브라우저에서 연동이 안 된다.
