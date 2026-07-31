@@ -56,9 +56,34 @@ import 구문이 안 돈다).
 - CSS는 src/index.css 하나에 최소한으로. 외부 이미지 금지, 폰트는 토큰이
   지정한 것만(웹폰트면 index.html <link> 또는 css @import).
 - 코드는 그대로 빌드·실행 가능해야 한다.
+- `data-testid` 부여 규칙(아래 섹션) 그대로 적용한다 - 나중에 Playwright e2e가
+  화면 요소를 찾는 유일한 방법이라 임의로 바꾸면 안 된다.
 
 [반드시 먼저 Read] 없음(이 스킬 자체가 전체 지시)
 ```
+
+## data-testid 컨벤션 (Playwright e2e 선행조건)
+
+api_spec.json의 method+path만으로 결정적으로 계산되는 slug를 쓴다 - 화면 구조를
+몰라도 fixture(happyPath steps)와 동일한 규칙으로 셀렉터를 재계산할 수 있어야
+Playwright e2e가 LLM 없이 자동으로 셀렉터를 만들 수 있다.
+
+**slug 계산**: method를 소문자로, path 앞뒤 `/` 제거, 남은 `/`는 `-`로, `{id}`
+같은 path parameter는 중괄호만 벗기고 소문자로(`{orderId}` → `orderid`).
+예: `PUT /widgets/{id}` → `put-widgets-id`, `GET /orders/{orderId}/items` →
+`get-orders-orderid-items`.
+
+- 엔드포인트를 호출하는 폼: `data-testid="{slug}-form"`
+- 폼의 각 입력 필드(request의 필드명 그대로, camelCase 유지): `data-testid="{slug}-field-{필드명}"`
+- 제출 버튼: `data-testid="{slug}-submit"`
+- 에러 메시지 영역: `data-testid="{slug}-error"`
+- 목록(GET, 배열/wrapper 응답) 컨테이너: `data-testid="{slug}-list"`
+- 목록의 각 항목 루트(여러 개 반복돼도 됨, 유일할 필요 없음): `data-testid="{slug}-item"`
+- 항목 안에서 값을 확인해야 하는 필드: testid 대신 `data-field="{필드명}"` 속성
+  (item이 여러 개라 testid를 고유하게 못 주므로 속성으로 스코프 좁힘)
+
+한 화면이 API 명세에 없는 버튼·장식 요소를 더 갖는 건 상관없다 - 이 규칙은
+API 계약과 직접 연결된 요소에만 적용한다.
 
 ## 검증
 
