@@ -191,20 +191,31 @@ def run_happy_path(page, api_spec: dict, wait_ms: int = 800) -> tuple[list[str],
             want_success = all(c < 400 for c in codes)
             want_failure = all(c >= 400 for c in codes)
 
+            force_submit = False
             if has_path_param(ep["path"]):
                 id_token = _id_token_from_path(ep["path"], path)
                 scope = _find_item_by_id(page, id_token)
                 if scope is None:
-                    if want_failure:
+                    # 인라인할 목록 자체가 없는 화면(예: 이 역할은 전체 목록을 못 봄)은
+                    # "독립 id입력 폼" 패턴을 쓴다 - 화면에 보이는 `*-field-id` 아무거나
+                    # 채운다(같은 화면의 형제 액션과 id 입력을 공유하는 경우도 있어서
+                    # 이 엔드포인트 전용 필드로 한정하지 않는다).
+                    standalone_id = page.locator('[data-testid$="-field-id"]')
+                    if standalone_id.count() > 0:
+                        standalone_id.first.fill(str(id_token))
+                        scope = page
+                        force_submit = True
+                    elif want_failure:
                         notes.append(f"[{label}] UI에 id={id_token} 항목이 없어 건너뜀 (정상 - 거부 케이스)")
+                        continue
                     else:
-                        problems.append(f"[{label}] {method} {path}: id={id_token} 항목을 목록에서 못 찾음")
-                    continue
+                        problems.append(f"[{label}] {method} {path}: id={id_token} 항목을 목록에서도, 독립 id입력 폼에서도 못 찾음")
+                        continue
             else:
                 form = page.locator(f'[data-testid="{s}-form"]')
                 scope = form.first if form.count() > 0 else page
 
-            if method.upper() != "GET":
+            if method.upper() != "GET" or force_submit:
                 missing_field = False
                 for field, value in body.items():
                     input_loc = scope.locator(f'[data-testid="{s}-field-{field}"]')
