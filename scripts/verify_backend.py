@@ -396,6 +396,26 @@ def _substitute(value, vars: dict):
     return value
 
 
+def _extract_field(payload, field: str):
+    """capture 필드 하나를 읽는다. 보통은 최상위 키(`"id"`)지만,
+    `"seats.0.id"`처럼 점으로 이으면 목록 응답의 N번째 항목 안까지 들어갈 수
+    있다(숫자 세그먼트는 리스트 인덱스, 그 외는 dict 키) - 서버가 자동생성한
+    자식 리소스(예: 열차 등록 시 같이 생기는 좌석)처럼 별도 생성 API가 없어
+    id를 알아낼 방법이 목록 조회뿐인 경우에 쓴다."""
+    cur = payload
+    for part in field.split("."):
+        if isinstance(cur, list):
+            try:
+                cur = cur[int(part)]
+            except (ValueError, IndexError):
+                return None
+        elif isinstance(cur, dict):
+            cur = cur.get(part)
+        else:
+            return None
+    return cur
+
+
 def _first_list(payload):
     """응답에서 목록을 꺼낸다 - 그대로 배열이거나 wrapper dict({"loans": [...]}) 둘 다."""
     if isinstance(payload, list):
@@ -512,7 +532,7 @@ def _run_happy_path(base_url: str, api_spec: dict, db: str):
                 ], notes, None
 
         for var, field in (step.get("capture") or {}).items():
-            got = payload.get(field) if isinstance(payload, dict) else None
+            got = _extract_field(payload, field) if payload is not None else None
             if got is None:
                 return [
                     f"[{label}] {method} {path}: 응답에서 '{field}'를 못 찾아 "
@@ -720,6 +740,13 @@ if __name__ == "__main__":
     assert _substitute("/loans/${bookId}/return", v) == "/loans/3/return"
     assert _substitute({"a": "${bookId}", "b": ["${name}"]}, v) == {"a": 3, "b": ["홍길동"]}
     assert _substitute("${nope}", v) == "${nope}"    # 없는 변수는 그대로 둔다
+
+    # capture 필드 경로: 최상위 키는 그대로, 점 표기는 목록 항목 안까지 들어간다.
+    assert _extract_field({"id": 5}, "id") == 5
+    assert _extract_field({"seats": [{"id": 11}, {"id": 12}]}, "seats.0.id") == 11
+    assert _extract_field({"seats": [{"id": 11}, {"id": 12}]}, "seats.1.id") == 12
+    assert _extract_field({"seats": []}, "seats.0.id") is None
+    assert _extract_field({"a": {"b": 7}}, "a.b") == 7
 
     # 응답에서 목록 꺼내기: 배열 그대로 / wrapper dict 둘 다.
     assert _first_list([{"id": 1}]) == [{"id": 1}]
