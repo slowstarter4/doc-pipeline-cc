@@ -97,6 +97,13 @@ DB_TARGET - 재실행이면 위 재생성 스텝과 같은 것, 여기선 최초
 
 ## 2. 백엔드 + 프론트 생성 (병렬)
 
+**디스패치 전에 `generated/objections/`를 비운다**(있으면) - 이전 실행의
+이의가 이번 실행 결과에 섞이면 4단계에서 "이번에 뭐가 새로 나왔는지"를
+못 가른다. 조각별 파일이라 매 실행 처음부터 새로 쌓는 게 맞다:
+```bash
+rm -rf generated/objections
+```
+
 **같은 메시지에 두 갈래를 동시에 진행한다** - 백엔드와 프론트는 `api_spec.json`
 만 공유하고 서로를 안 본다(계약 공유형, 협상 없음):
 
@@ -127,7 +134,24 @@ python scripts/verify_frontend.py --api-spec generated/docs/api_spec.json
 ```
 실패하면 `verify-frontend` 스킬대로 전체 재디스패치(3회 상한, 조각화 없음).
 
-## 4. 완료 보고
+## 4. 계약 이의제기 확인
+
+서브에이전트들이 구현 중 계약(api_spec)에 정보가 부족해서 임의 판단한 게
+있으면 `generated/objections/<slice>.json`에 남겼을 것이다(형식은
+`.claude/skills/references/objections-protocol.md`). 판정도 재디스패치도
+여기서 안 한다 - 모아서 보여주기만 한다:
+
+```bash
+python scripts/collect_objections.py
+```
+
+비어 있으면("계약 이의 없음.") 그냥 다음 단계로 넘어간다 - 계약이 구현에
+충분했다는 뜻이고, 이 자체가 정상 결과다. 이의가 있으면 출력을 그대로
+사람에게 보여준다(이미 severity 순 - blocking → workaround → question).
+**여기서 자동으로 코드를 고치거나 재디스패치하지 않는다** - Level 1은
+기록만 한다, 사람이 읽고 다음을 판단한다.
+
+## 5. 완료 보고
 
 사람에게 알려줄 것:
 - 문서 위치(`generated/docs/`), 백엔드/프론트 위치(`generated/backend`,

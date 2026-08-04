@@ -60,7 +60,14 @@ import 구문이 안 돈다).
 - `data-testid` 부여 규칙(아래 섹션) 그대로 적용한다 - 나중에 Playwright e2e가
   화면 요소를 찾는 유일한 방법이라 임의로 바꾸면 안 된다.
 
-[반드시 먼저 Read] 없음(이 스킬 자체가 전체 지시)
+[반드시 먼저 Read]
+.claude/skills/references/objections-protocol.md
+
+[이의제기]
+계약(api_spec)에 정보가 없거나 모호해서 임의로 판단한 게 있으면
+generated/objections/frontend.json에 기록한다 (위 objections-protocol.md의
+형식/기준 그대로, from은 "frontend", slice도 "frontend"). 없으면 파일을 안
+만들어도 된다.
 ```
 
 ## data-testid 컨벤션 (Playwright e2e 선행조건)

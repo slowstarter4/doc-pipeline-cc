@@ -244,10 +244,16 @@ ObjectMapper 설정, build.gradle, settings.gradle, application.properties, sche
 
 [반드시 먼저 Read할 것]
 .claude/skills/gen-backend-spring/references/gotchas.md
+.claude/skills/references/objections-protocol.md
 
 [참고 자료]
 ERD: generated/docs/data_model.json
 DB 스키마(실행하지 않음, 테이블명 확인용): generated/docs/schema.sql
+
+[이의제기]
+계약(api_spec)에 정보가 없거나 모호해서 임의로 판단한 게 있으면
+generated/objections/{module}.json에 기록한다 (위 objections-protocol.md의
+형식/기준 그대로). 없으면 파일을 안 만들어도 된다.
 ```
 
 ### 4. 결과 확인

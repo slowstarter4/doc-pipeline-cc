@@ -430,3 +430,45 @@
   원칙과 충돌). (4) 다른 도메인/스택 조합으로 e2e 실측 계속 쌓기(통상
   운영 사이클, 특히 spring 외 스택 x 이 도메인, 또는 마법사형 흐름이 있는
   다른 도메인).
+
+- **2026-08-04 (이어서)**: **계약 이의제기(objections) Level 1 도입 + 기차예약
+  도메인으로 실측.** 목적은 협상 기계장치가 아니라 계측 - `api_spec`이 실제
+  구현에 충분한지, 서브에이전트가 어디서 임의 판단을 내리는지 처음으로
+  기록에 남게 했다(판정·재디스패치 없음, 사람이 읽고 다음을 정함).
+  **선행 작업**(objections보다 먼저, CLAUDE.md 1번 규칙대로 정적으로 잡을 수
+  있는 건 objections로 안 돌림): `verify_frontend.py`에 응답 구조분해 키 대조
+  추가(`const {a,b} = await res.json()` / `.then(({x}) => ...)` 패턴에서 키를
+  뽑아 api_spec 응답 스키마 최상위 키와 대조, 없는 키 꺼내 쓰면 계약 위반).
+  범위는 최상위 키 + 구조분해만(중첩 객체·`data.todos`류 프로퍼티 접근은
+  변수 별칭 추적이 필요해 AST 없이는 오탐 위험 커서 뺐음 - 필요성 확인되면
+  확장).
+  **Level 1 구현**: `scripts/collect_objections.py`(읽기·병합·severity순
+  정렬·출력, `backup_generated.py` 교훈대로 self-check는 `--self-check` 뒤로
+  뺌), 공통 지시문 `.claude/skills/references/objections-protocol.md`(스택
+  무관이라 gotchas.md처럼 스택별 복제 안 하고 한 곳에 둠 - 4개 백엔드 스킬 +
+  프론트 2개가 참조), 조각별 파일 분리(`generated/objections/<slice>.json`,
+  병렬 디스패치 동시쓰기 충돌 회피 - 락/재시도 로직 없이 원천 차단), `build-app`
+  2단계 디스패치 전 `generated/objections/` 비우기(재실행 stale 방지) +
+  4단계 `collect_objections.py` 호출해 사람에게 보여주기.
+  **실측**(기차예약, spring+react-ts+postgres, 기존 `generated/docs` 재사용):
+  ① 프론트 1개 재디스패치 - 이의 2건(좌석 목록 응답 item 스키마 api_spec에
+  안 실려있어 필드명 추정 `workaround`, X-User-Id 발급 방식 불명 `question`).
+  **음성 확인이 더 중요**: 화면설계서가 요구하는 열차명/역명 표시(Trip
+  엔티티엔 FK만 있음)는 이의로 안 남았다 - GET /trains·GET /stations를 따로
+  불러 클라이언트 join으로 풀었는데, 그 두 엔드포인트 응답에 이름 필드가
+  이미 명확히 정의돼 있어서 "임의 판단"이 아니라 "계약대로 다단계 구현"이었기
+  때문. 필터가 취향 차이(멀티콜 조합)와 진짜 계약 공백(스키마 미정의)을
+  구분해내고 있다는 뜻 - 설계 의도대로 동작.
+  ② 백엔드 5조각(trains/stations/trips/reservations/payments) 병렬
+  재디스패치 - trains/stations/trips/payments는 이의 없음(계약 충분,
+  trips는 곁다리로 N+1 쿼리 버그 수정), reservations만 이의 2건(결제
+  성공/실패 판정 기준 없어 항상 성공 처리 `question`, ERD의 시각 필드가
+  `date` 타입인데 15분 타임아웃 규칙엔 시:분 정밀도 필요해 datetime으로
+  다룸 `question`). 5개 동시 디스패치에도 파일 충돌 없음(각자 자기
+  `<slice>.json`만 씀), `collect_objections.py` 정상 병합.
+  **한 세션이 세션 리밋으로 중단됐다가 SendMessage로 트랜스크립트 기반
+  재개돼 이어서 정상 완료됨** - 별도 이슈 아니고 참고용 기록.
+  **다음에 볼 것**: 이의 건수가 계속 이 정도(도메인당 2~4건, 전부 severity
+  workaround/question, blocking 아직 0건)로 쌓이는지, 다른 도메인에서도
+  "결제 성공/실패 판정 기준 없음"류가 반복되면 gen-docs 프롬프트 규칙으로
+  승격(Level 2 안 감).

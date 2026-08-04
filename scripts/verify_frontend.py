@@ -31,6 +31,14 @@ _AXIOS_VERB_RE = re.compile(r"""axios\s*\.\s*(get|post|put|patch|delete)\s*\(\s*
 _ASSIGNMENT_RE = re.compile(r"[=(]\s*$")  # 뒤에 오는 게 아니라 앞쪽 문맥 확인용
 _VALID_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 
+# 호출 뒤 `res.json()` 구조분해에서 응답 키를 뽑는다. 변수명은 안 가리고
+# `.json()` 앞이 뭐든(`res`/`response`/`r` 등) 매칭한다 - 어차피 바로 다음
+# 문장에서 그 호출의 결과를 받는다고 가정하는 근접성 휴리스틱이라, 변수명을
+# 못박으면 오히려 흔한 명명(`res`, `data`, `r`)을 놓친다.
+_DESTRUCTURE_JSON_RE = re.compile(r"\{\s*([^{}]+?)\s*\}\s*=\s*(?:await\s+)?[\w$.]*\bjson\(\)")
+_DESTRUCTURE_THEN_RE = re.compile(r"\.then\(\s*\(?\s*\{\s*([^{}]+?)\s*\}\s*\)?\s*=>")
+_NEXT_CALL_RE = re.compile(r"\bfetch\(|\baxios\s*\.\s*\w+\s*\(")
+
 
 def _is_ignored(path: Path) -> bool:
     return any(part in IGNORED_DIRS for part in path.parts)
@@ -114,22 +122,57 @@ def _preceding_kind(text: str, start: int) -> str:
     return "other"
 
 
+def _parse_key_names(group: str) -> set:
+    """`{ a, b: renamed, ...rest }` 형태의 구조분해 목록에서 응답 필드명만 뽑는다.
+    콜론 뒤(로컬 변수명)가 아니라 콜론 앞(실제 응답 키)을 취한다."""
+    names = set()
+    for part in group.split(","):
+        part = part.strip()
+        if part.startswith("..."):  # rest 요소는 응답 필드 하나가 아니다
+            continue
+        name = part.split(":")[0].strip()
+        if re.fullmatch(r"[A-Za-z_$][\w$]*", name):
+            names.add(name)
+    return names
+
+
+def _extract_destructured_keys(text: str, start: int, window: int = 600) -> set:
+    """호출 지점 바로 뒤 구간에서 `res.json()` 구조분해로 꺼내 쓰는 키를 뽑는다.
+    다음 fetch/axios 호출이 구간 안에 나오면 그 앞에서 자른다 - 안 그러면 다음
+    호출의 구조분해를 이번 호출 것으로 오귀속한다."""
+    segment = text[start:start + window]
+    cut = _NEXT_CALL_RE.search(segment)
+    if cut:
+        segment = segment[:cut.start()]
+    keys = set()
+    m = _DESTRUCTURE_JSON_RE.search(segment)
+    if m:
+        keys |= _parse_key_names(m.group(1))
+    m2 = _DESTRUCTURE_THEN_RE.search(segment)
+    if m2:
+        keys |= _parse_key_names(m2.group(1))
+    return keys
+
+
 def _extract_call_sites(text: str) -> list:
-    """호출마다 (method, path, certain)을 뽑는다. `certain=False`는 URL이 변수를
-    거치는 등 그 자리에서 method를 못 정하는 경우 - 조용히 GET으로 단정하지 않고
-    '검증 불가'로 따로 보고한다."""
+    """호출마다 (method, path, certain, dest_keys)를 뽑는다. `certain=False`는 URL이
+    변수를 거치는 등 그 자리에서 method를 못 정하는 경우 - 조용히 GET으로 단정하지
+    않고 '검증 불가'로 따로 보고한다. `dest_keys`는 응답을 구조분해로 꺼내 쓰는
+    필드명 집합(비어 있을 수 있음) - `data.todos` 같은 프로퍼티 접근은 변수 별칭을
+    못 쫓아가서(AST 없이는 정적으로 무리) 대상에서 뺐다, 구조분해만 본다."""
     text = _strip_comments(text)
     sites = []
     for regex in (_TEMPLATE_URL_RE, _FETCH_RE):
         for m in regex.finditer(text):
             path = _normalize(m.group(1))
             if _preceding_kind(text, m.start()) != "call":
-                sites.append({"path": path, "method": None, "certain": False})
+                sites.append({"path": path, "method": None, "certain": False, "dest_keys": set()})
                 continue
+            dest_keys = _extract_destructured_keys(text, m.end())
             window_before = text[max(0, m.start() - 40):m.start()]
             axios_m = _AXIOS_VERB_RE.search(window_before)
             if axios_m:
-                sites.append({"path": path, "method": axios_m.group(1).upper(), "certain": True})
+                sites.append({"path": path, "method": axios_m.group(1).upper(), "certain": True, "dest_keys": dest_keys})
                 continue
             window_after = text[m.end():m.end() + 400]
             stop = window_after.find(";")
@@ -137,7 +180,7 @@ def _extract_call_sites(text: str) -> list:
                 window_after = window_after[:stop]
             method_m = _METHOD_KEY_RE.search(window_after)
             method = method_m.group(1).upper() if method_m else "GET"
-            sites.append({"path": path, "method": method, "certain": True})
+            sites.append({"path": path, "method": method, "certain": True, "dest_keys": dest_keys})
     return sites
 
 
@@ -148,6 +191,35 @@ def _list_wrapper_keys(api_spec: dict) -> set:
         if isinstance(resp, dict):
             keys |= {k for k, v in resp.items() if isinstance(v, list)}
     return keys
+
+
+def _endpoint_response_keys(api_spec: dict) -> dict:
+    """(method, path) → 응답 스키마 최상위 키 집합. response가 dict 형태인
+    엔드포인트만 실림 - 리스트 응답이나 스키마 미기재는 대조 대상이 아니다."""
+    keys = {}
+    for ep in api_spec.get("endpoints", []):
+        resp = ep.get("response")
+        if isinstance(resp, dict):
+            keys[(ep.get("method", "").upper(), _normalize(ep["path"]))] = set(resp.keys())
+    return keys
+
+
+def _check_destructured_keys(api_spec: dict, sites: list) -> list:
+    """호출부가 구조분해로 꺼내 쓰는 키가 그 엔드포인트의 응답 스키마에 있는지 본다.
+    스키마에 없는 키를 꺼내 쓰면 계약 위반 - 응답 자체엔 없는 필드를 프론트가
+    있다고 가정하고 구현했다는 뜻이다."""
+    endpoint_keys = _endpoint_response_keys(api_spec)
+    problems = []
+    for s in sites:
+        if not s.get("certain") or not s.get("dest_keys"):
+            continue
+        schema_keys = endpoint_keys.get((s["method"], s["path"]))
+        if schema_keys is None:
+            continue
+        missing = sorted(s["dest_keys"] - schema_keys)
+        if missing:
+            problems.append(f"{s['method']} {s['path']}: " + ", ".join(missing))
+    return problems
 
 
 def _check_response_shape(api_spec: dict, sources_text: str):
@@ -251,9 +323,17 @@ def verify(api_spec: dict, design_target: str | None = None) -> dict:
     sources_text = _strip_comments("\n".join(texts))
     shape_logs, shape_ok = _check_response_shape(api_spec, sources_text)
     logs += shape_logs
+
+    key_problems = _check_destructured_keys(api_spec, sites)
+    if key_problems:
+        logs.append(
+            "응답 구조분해에서 명세에 없는 키를 꺼내 씀 (계약 위반):\n"
+            + "\n".join(f"  - {p}" for p in key_problems)
+        )
+
     logs += _check_design_tokens(sources_text, design_target)
 
-    passed = bool(called) and not unknown and not method_mismatch and shape_ok
+    passed = bool(called) and not unknown and not method_mismatch and shape_ok and not key_problems
     return {"passed": passed, "logs": "\n".join(logs)}
 
 
@@ -334,6 +414,27 @@ if __name__ == "__main__":
     assert _is_ignored(Path("generated/frontend/node_modules/react/index.js"))
     assert not _is_ignored(Path("generated/frontend/src/App.jsx"))
 
+    # 구조분해 키 이름 파싱: 콜론 뒤 별칭이 아니라 콜론 앞 실제 응답 키를 취한다.
+    assert _parse_key_names("a, b: renamed, ...rest") == {"a", "b"}
+
+    # 호출 뒤 `res.json()` 구조분해에서 키를 뽑되, 다음 호출이 나오면 그 앞에서 자른다.
+    dest_text = "fetch(`${BASE}/loans`); const { loans, memberName } = await res.json();"
+    assert _extract_destructured_keys(dest_text, dest_text.index(");") + 2) == {"loans", "memberName"}
+    two_calls = "fetch(`${BASE}/a`); fetch(`${BASE}/b`); const { x } = await res.json();"
+    assert _extract_destructured_keys(two_calls, two_calls.index("/a") ) == set()
+
+    # .then() 콜백 구조분해도 잡는다.
+    then_text = "fetch(`${BASE}/loans`).then(({ items }) => items);"
+    assert _extract_destructured_keys(then_text, then_text.index(")")) == {"items"}
+
+    # 응답 스키마에 없는 키를 구조분해로 꺼내 쓰면 계약 위반으로 잡아야 한다.
+    key_spec = {"endpoints": [{"method": "GET", "path": "/loans", "response": {"memberId": "string"}}]}
+    assert _endpoint_response_keys(key_spec) == {("GET", "/loans"): {"memberId"}}
+    ok_site = [{"method": "GET", "path": "/loans", "certain": True, "dest_keys": {"memberId"}}]
+    assert _check_destructured_keys(key_spec, ok_site) == []
+    bad_site = [{"method": "GET", "path": "/loans", "certain": True, "dest_keys": {"memberName"}}]
+    assert _check_destructured_keys(key_spec, bad_site) == ["GET /loans: memberName"]
+
     # method 추출: 옵션에 명시가 없으면 GET, 있으면 그 값.
     method_html = """
       fetch(`${BASE}/todos`);
@@ -375,5 +476,16 @@ if __name__ == "__main__":
         )
         ok_report = verify(order_spec)
         assert ok_report["passed"] is True
+
+        # verify(): 응답 스키마에 없는 키를 구조분해로 꺼내 쓰면 실패해야 한다.
+        loans_spec = {"endpoints": [{"method": "GET", "path": "/loans", "response": {"memberId": "string"}}]}
+        (FRONTEND_OUT_DIR / "app.js").write_text(
+            'const res = await fetch(`${BASE}/loans`);\n'
+            'const { memberName } = await res.json();',
+            encoding="utf-8",
+        )
+        key_report = verify(loans_spec)
+        assert key_report["passed"] is False
+        assert "memberName" in key_report["logs"]
 
     print("verify_frontend self-check 통과")

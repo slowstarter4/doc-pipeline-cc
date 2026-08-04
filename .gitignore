@@ -5,6 +5,7 @@ __pycache__/
 
 # 검증용 로컬 산출물
 .schemathesis/
+.gradle/
 
 # 에디터
 .vscode/
