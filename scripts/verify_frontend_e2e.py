@@ -13,12 +13,33 @@ path parameter가 있는 엔드포인트(PUT/DELETE /x/{id})는 컨벤션상 목
 안에 인라인으로 존재한다고 본다. 그 id로 갈 항목이 화면에 없으면(예: 존재하지
 않는 id로 404를 유도하는 스텝) 검증을 조용히 건너뛴다 - UI에 없는 대상을 UI로
 조작할 방법이 없는 게 당연하기 때문이다(실패 아님).
+
+`--backend-url`을 주면, path parameter 없는 생성(POST) 스텝인데 화면 어디에도
+그 폼(`{slug}-form`)이 없는 경우(예: 관리자가 별도 등록 화면 없이 seed로만
+넣는 참조 데이터 - 기차예약 도메인의 역 등록처럼) UI 조작 대신 백엔드에 직접
+HTTP 요청을 보내 데이터를 만들고 capture까지 이어간다. 폼이 아예 없는 것과
+폼은 있는데 특정 필드/버튼만 못 찾는 것은 다르게 취급한다 - 후자는 진짜 프론트
+버그일 수 있어 여전히 실패로 잡는다.
+
+**알려진 한계 - 다단계 선택 마법사 흐름**: 이 스크립트의 폼 모델은 "요청
+필드 하나당 입력칸 하나"를 가정한다. "운행 검색 → 운행 선택 → 좌석 클릭"처럼
+이전 화면의 선택 결과를 앱 상태로 들고 다음 화면에 반영하는 마법사형 흐름은
+이 모델로 표현이 안 된다 - 그 화면의 tripId/seatId 같은 필드가 `readonly`
+입력칸(선택 결과를 보여주기만 함)이면 채우려다 타임아웃난다(실측: 2026-08-04
+기차예약 도메인 예약 생성 화면). 이런 필드는 지금은 실패로 남겨둔다 - 억지로
+skip하면 빈 값으로 제출돼 다른 이유로 또 실패하고, 무엇보다 이 흐름 자체를
+실제로 검증 못 한 채 조용히 넘어가는 게 더 위험하다. 다음에 같은 패턴을 또
+만나면 그때 "이전 스텝에서 만든 항목을 목록에서 클릭해 선택"하는 별도 스텝
+타입을 컨벤션에 추가할지 판단한다.
 """
 
 import argparse
 import json
 import re
 import sys
+import uuid
+
+import requests
 
 _PLACEHOLDER_RE = re.compile(r"\$\{(\w+)\}")
 
@@ -112,14 +133,44 @@ def _list_has_item(page, fields: dict) -> bool:
     return False
 
 
+def _capture_indexed(page, s: str, field: str) -> str | None:
+    """`"seats.0.id"`처럼 점표기 경로로 목록의 N번째 항목에서 값을 읽는다 -
+    verify_backend.py의 JSON 응답 인덱싱과 같은 목적이지만 여기선 DOM에서
+    `{slug}-item`을 순서대로 짚는다(생성 API 없이 다른 리소스의 부수효과로만
+    생기는 항목 - 예: 열차 등록 시 자동생성되는 좌석 - 의 id를 목록 조회
+    화면에서 얻어야 할 때 쓴다)."""
+    parts = field.split(".")
+    if len(parts) != 3 or not parts[1].isdigit():
+        return None
+    idx, subfield = int(parts[1]), parts[2]
+    items = page.locator(f'[data-testid="{s}-item"]')
+    if idx >= items.count():
+        return None
+    val = _field_text(items.nth(idx), subfield)
+    if val is None:
+        return None
+    return _extract_id(val) if subfield == "id" else val
+
+
 def _capture_field(page, body: dict, field: str) -> str | None:
     items = page.locator('[data-testid$="-item"]')
+    match_fields = {k: v for k, v in body.items() if k != "__persist"}
     for i in range(items.count()):
         it = items.nth(i)
-        if all(_field_matches(it, k, v) for k, v in body.items() if k != "__persist"):
+        if all(_field_matches(it, k, v) for k, v in match_fields.items()):
             val = _field_text(it, field)
             if val is not None:
                 return _extract_id(val) if field == "id" else val
+    # 폴백: FK id 필드를 화면이 사람이 읽는 라벨로 바꿔 보여주면(예:
+    # departureStationId 대신 역이름) 원래 값이 텍스트 어디에도 없어 완전
+    # 일치가 하나도 안 잡힌다(boolean 로컬라이즈 라벨과 같은 부류의 한계).
+    # 방금 만든 항목은 거의 항상 목록 마지막이라는 가정으로 마지막 항목에서
+    # 한 번 더 시도한다 - 실측: 기차예약 도메인 운행 등록(출발역/도착역이
+    # 이름으로 표시됨).
+    if items.count() > 0 and match_fields:
+        val = _field_text(items.nth(items.count() - 1), field)
+        if val is not None:
+            return _extract_id(val) if field == "id" else val
     return None
 
 
@@ -137,7 +188,16 @@ def _reveal_screen(page, ep_path: str, target_selector: str, wait_ms: int) -> bo
     아니면 역할을 바꿔가며 계속 시도한다. 끝내 못 찾으면 False - 원래 화면
     그대로 다음 단계에서 실패 보고된다."""
     segs = [s for s in _path_segments(ep_path) if not (s.startswith("{") and s.endswith("}"))]
-    for role_testid in (None, "role-buyer", "role-admin"):
+    # 역할 토글 버튼 이름은 도메인마다 다르다(buyer/admin, passenger/admin 등) -
+    # `role-buyer`/`role-admin`으로 하드코딩하면 다른 이름을 쓰는 도메인에서
+    # 역할 전환 자체가 안 먹혀 화면을 못 찾는다(실측: 기차예약 도메인은
+    # `role-passenger`를 쓰는데 하드코딩된 `role-buyer`만 찾아서 승객 전용
+    # 화면 전환이 조용히 실패했다). `role-`로 시작하는 testid를 전부 훑는다.
+    role_testids = [None] + [
+        page.locator('[data-testid^="role-"]').nth(i).get_attribute("data-testid")
+        for i in range(page.locator('[data-testid^="role-"]').count())
+    ]
+    for role_testid in role_testids:
         if role_testid:
             role_btn = page.locator(f'[data-testid="{role_testid}"]')
             if role_btn.count() == 0:
@@ -156,7 +216,16 @@ def _reveal_screen(page, ep_path: str, target_selector: str, wait_ms: int) -> bo
     return False
 
 
-def run_happy_path(page, api_spec: dict, wait_ms: int = 800) -> tuple[list[str], list[str]]:
+def _seed_via_backend(backend_url: str, method: str, path: str, body: dict, headers: dict) -> "tuple[int, dict | None]":
+    req_headers = {**headers, "Content-Type": "application/json", "Idempotency-Key": str(uuid.uuid4())}
+    r = requests.request(method, f"{backend_url}{path}", json=body, headers=req_headers, timeout=5)
+    try:
+        return r.status_code, r.json()
+    except Exception:
+        return r.status_code, None
+
+
+def run_happy_path(page, api_spec: dict, wait_ms: int = 800, backend_url: "str | None" = None) -> tuple[list[str], list[str]]:
     problems: list[str] = []
     notes: list[str] = []
     vars: dict = {}
@@ -194,7 +263,18 @@ def run_happy_path(page, api_spec: dict, wait_ms: int = 800) -> tuple[list[str],
             force_submit = False
             if has_path_param(ep["path"]):
                 id_token = _id_token_from_path(ep["path"], path)
-                scope = _find_item_by_id(page, id_token)
+                own_form = page.locator(f'[data-testid="{s}-form"]')
+                own_id_field = own_form.locator(f'[data-testid="{s}-field-id"]') if own_form.count() > 0 else own_form
+                if own_form.count() > 0 and own_id_field.count() > 0:
+                    # 이 엔드포인트 전용 "독립 id입력 폼"이 있다 - 다른 리소스가
+                    # 우연히 같은 id 값을 써서(예: 운행 id와 예약대상 id가 같은
+                    # 숫자) 목록에서 잘못된 항목을 집어오는 것보다 이쪽이 항상
+                    # 우선이다(실측: 기차예약 도메인 좌석조회 폼).
+                    own_id_field.first.fill(str(id_token))
+                    scope = own_form.first
+                    force_submit = True
+                else:
+                    scope = _find_item_by_id(page, id_token)
                 if scope is None:
                     # 인라인할 목록 자체가 없는 화면(예: 이 역할은 전체 목록을 못 봄)은
                     # "독립 id입력 폼" 패턴을 쓴다 - 화면에 보이는 `*-field-id` 아무거나
@@ -213,17 +293,58 @@ def run_happy_path(page, api_spec: dict, wait_ms: int = 800) -> tuple[list[str],
                         continue
             else:
                 form = page.locator(f'[data-testid="{s}-form"]')
+                if form.count() == 0 and method.upper() != "GET" and backend_url:
+                    # 화면 어디에도 이 생성 폼이 없다 - screen_design.md상 이
+                    # 엔드포인트는 UI가 아니라 참조 데이터 seed용으로만 존재하는
+                    # 경우다(예: 별도 등록 화면 없는 역). UI 조작 대신 백엔드에
+                    # 직접 호출해 데이터를 만들고 capture를 이어간다.
+                    status, payload = _seed_via_backend(
+                        backend_url, method, path, body, step.get("headers") or {"X-User-Type": "ADMIN"}
+                    )
+                    if status not in codes:
+                        problems.append(
+                            f"[{label}] {method} {path}: UI에 폼이 없어 API로 직접 호출했는데 "
+                            f"{codes}를 기대했는데 {status} 반환"
+                        )
+                        continue
+                    for var, field in (step.get("capture") or {}).items():
+                        if var == "__persist" or payload is None:
+                            continue
+                        if field in payload:
+                            vars[var] = payload[field]
+                    # 프론트가 이 데이터를 보통 최초 마운트 시점에 한 번만
+                    # fetch해서 상태에 들고 있다 - 화면 뒤에서 API로 몰래
+                    # 만들었으니 새로고침해서 다시 읽어오게 한다(실측: 안 하면
+                    # 뒤 스텝의 select 옵션에 방금 만든 역이 안 보임).
+                    page.reload()
+                    page.wait_for_timeout(wait_ms)
+                    notes.append(f"[{label}] {method} {path} - UI에 폼 없어 API로 직접 seed함 (설계상 의도)")
+                    continue
                 scope = form.first if form.count() > 0 else page
+
+            # 인라인 항목 수정(PUT/DELETE /x/{id})은 화면에 안 보이는 필드를
+            # 앱이 기존 값과 merge해서 채우는 경우가 흔하다(예: 열차 수정 폼이
+            # 이름/좌석수만 노출하고 나머지는 그대로 유지) - 새로 만드는 폼과
+            # 달리 이런 필드가 없다고 실패로 치지 않는다(merge할 원본이 있으니
+            # UI가 그 필드를 아예 안 보여줘도 정상 동작일 수 있다).
+            is_inline_edit = has_path_param(ep["path"]) and not force_submit
 
             if method.upper() != "GET" or force_submit:
                 missing_field = False
                 for field, value in body.items():
                     input_loc = scope.locator(f'[data-testid="{s}-field-{field}"]')
                     if input_loc.count() == 0:
-                        problems.append(f"[{label}] {method} {path}: 입력 필드 {s}-field-{field}를 못 찾음")
-                        missing_field = True
+                        if is_inline_edit:
+                            notes.append(f"[{label}] 입력 필드 {s}-field-{field} 없음 - 앱이 기존값 유지할 것으로 보고 건너뜀")
+                        else:
+                            problems.append(f"[{label}] {method} {path}: 입력 필드 {s}-field-{field}를 못 찾음")
+                            missing_field = True
                         continue
-                    input_loc.first.fill(str(value))
+                    el = input_loc.first
+                    if el.evaluate("e => e.tagName") == "SELECT":
+                        el.select_option(value=str(value))
+                    else:
+                        el.fill(str(value))
                 submit_loc = scope.locator(f'[data-testid="{s}-submit"]')
                 if submit_loc.count() == 0:
                     problems.append(f"[{label}] {method} {path}: 제출 버튼 {s}-submit을 못 찾음")
@@ -265,7 +386,7 @@ def run_happy_path(page, api_spec: dict, wait_ms: int = 800) -> tuple[list[str],
             for var, field in (step.get("capture") or {}).items():
                 if var == "__persist":
                     continue
-                val = _capture_field(page, body, field)
+                val = _capture_indexed(page, s, field) if "." in field else _capture_field(page, body, field)
                 if val is None:
                     notes.append(f"[{label}] '{var}' capture 실패(필드 {field}) - 이후 스텝이 이 변수를 못 씀")
                 else:
@@ -282,6 +403,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--api-spec", default="generated/docs/api_spec.json")
     p.add_argument("--url", required=True, help="프론트 서버 URL (file:// 도 가능)")
+    p.add_argument("--backend-url", default=None, help="화면에 폼이 아예 없는 생성 스텝을 API로 직접 seed할 백엔드 URL (예: http://localhost:8080)")
     p.add_argument("--headed", action="store_true")
     args = p.parse_args()
 
@@ -296,7 +418,7 @@ def main() -> None:
         browser = pw.chromium.launch(headless=not args.headed)
         page = browser.new_page()
         page.goto(args.url)
-        problems, notes = run_happy_path(page, api_spec)
+        problems, notes = run_happy_path(page, api_spec, backend_url=args.backend_url)
         browser.close()
 
     logs = "\n".join(f"- {n}" for n in notes)
