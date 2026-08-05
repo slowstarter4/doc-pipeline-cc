@@ -27,7 +27,9 @@ python scripts/endpoint_groups.py generated/docs/api_spec.json -o generated/back
 python scripts/gen_express_scaffold.py --groups orders,payments,... --dialect postgres -o generated/backend
 ```
 `generated/backend/server.js`, `db.js`, `package.json`을 쓴다.
-`generated/docs/schema.sql`도 `generated/backend/schema.sql`로 복사해둔다.
+`generated/docs/schema.sql`도 `generated/backend/schema.sql`로 스크립트가 자동 복사한다(2026-08-05
+스크립트 수정 - 이전엔 오케스트레이터가 수동으로 복사해야 했는데 까먹기 쉬워서
+스크립트 책임으로 옮김).
 
 ### 3. 조각마다 서브에이전트 병렬 디스패치
 

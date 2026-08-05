@@ -121,6 +121,9 @@ def write_scaffold(out_dir: Path, groups: list[str], dialect: str) -> None:
     deps = "fastapi\nuvicorn\n" + ("psycopg[binary]\n" if dialect == "postgres" else "")
     (out_dir / "requirements.txt").write_text(deps, encoding="utf-8")
     (out_dir / ".env.example").write_text(env_example(dialect), encoding="utf-8")
+    schema_src = Path("generated/docs/schema.sql")
+    if schema_src.exists():
+        (out_dir / "schema.sql").write_text(schema_src.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def main() -> None:

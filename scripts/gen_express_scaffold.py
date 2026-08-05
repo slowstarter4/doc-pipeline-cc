@@ -166,6 +166,9 @@ def write_scaffold(out_dir: Path, groups: list[str], dialect: str, ts: bool) -> 
     (out_dir / f"server.{ext}").write_text(server_module(groups, dialect, ts), encoding="utf-8")
     (out_dir / "package.json").write_text(package_json(dialect, ts), encoding="utf-8")
     (out_dir / ".env.example").write_text(env_example(dialect), encoding="utf-8")
+    schema_src = Path("generated/docs/schema.sql")
+    if schema_src.exists():
+        (out_dir / "schema.sql").write_text(schema_src.read_text(encoding="utf-8"), encoding="utf-8")
     if ts:
         (out_dir / "tsconfig.json").write_text(
             '{\n  "compilerOptions": {\n    "target": "ES2020",\n    "module": "commonjs",\n'
