@@ -49,6 +49,15 @@ import 구문이 안 돈다).
 - rules에 역할 제한이 있고 로그인 UI가 화면설계서에 없으면 운영자 백오피스로
   간주, 모든 요청에 X-User-Type: ADMIN 헤더.
 - 네트워크 에러도 잡아서 "백엔드에 연결할 수 없습니다" 안내.
+- **`setXxx((prev) => ...)` 콜백 안에서 `await`를 쓰지 않는다** - 그 화살표
+  함수는 `async`가 아니므로 `await`가 예약어 파싱 에러로 빌드 자체를 깬다
+  (실측: 2026-08-05 todo 도메인, `setCompleteErrors((prev) => ({ ...prev,
+  [id]: await extractErrorMessage(res) }))`처럼 써서 vite가 `Unexpected
+  reserved word 'await'`로 죽음 - `verify_frontend.py`는 정적 정규식 검사라
+  이 빌드 에러를 못 잡고 통과시켰다). 에러 메시지처럼 비동기로 얻어야 하는
+  값은 먼저 `const message = await extractErrorMessage(res);`로 뽑아
+  변수에 담은 뒤, 그 변수를 `setXxx((prev) => ({ ...prev, [id]: message }))`
+  콜백 안에서 참조한다.
 - 액션(취소/거부 등)의 결과를 그 액션 버튼과 같은 상태 조건(예: `status === "확정"`일 때만 버튼+결과 배너를 같이 렌더)으로 묶지 않는다 - 액션이 성공해서 목록을 재조회하면 그 항목의 status가 바로 바뀌어 조건이 깨지고, 응답으로 받은 결과(예: 환불금액)가 화면에 뜨자마자 사라진다(실측: 기차예약 도메인, 취소 버튼과 환불금액 배너를 `status === "확정"` 블록 안에 같이 뒀다가 취소 직후 status가 "취소"로 바뀌면서 방금 응답으로 받은 환불금액이 렌더링될 새도 없이 사라짐). 결과 배너는 그 액션의 결과 state(예: `cancelResult[id]`)만으로 독립 조건을 건다.
 - 목록 조회는 첫 렌더 useEffect로 한 번, 생성/수정/삭제 후 재호출. **단 필수
   쿼리 파라미터(sellerId 등)가 비어있으면 첫 렌더에서 자동 호출하지 않는다** -
