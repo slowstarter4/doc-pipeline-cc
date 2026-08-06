@@ -243,7 +243,12 @@ _TECHNICAL_ERROR_MARKERS = (
     "classcastexception", "illegalstateexception", "runtimeexception", "stacktrace",
     "at java.", "at org.springframework", "at com.example",
     # node/express + pg(postgres), fastapi/psycopg 계열
-    "does not exist", "syntax error at or near", "typeerror", "referenceerror",
+    # "does not exist"는 단독으로 두면 정상적인 도메인 거부 메시지("postId does
+    # not exist")까지 오탐한다(실측: 2026-08-06 커뮤니티 게시판 도메인) -
+    # postgres/sqlite가 실제로 내는 "relation/column ... does not exist" SQL
+    # 에러 형태로 좁힌다.
+    "relation \"", "relation '", "column \"", "column '",
+    "syntax error at or near", "typeerror", "referenceerror",
     "cannot read propert", "undefined is not", "at object.<anonymous>",
     "traceback (most recent call last)",
 )
@@ -497,7 +502,12 @@ def _run_happy_path(base_url: str, api_spec: dict, db: str):
         body = _substitute(step.get("body"), vars) if step.get("body") is not None else None
         # Idempotency-Key는 이 레포 생성 엔드포인트에 흔한 요구사항이라 매번 새로
         # 붙인다(안 쓰는 구현이면 무시될 뿐). fixture headers가 기본 헤더를 덮는다.
-        headers = {**_SMOKE_HEADERS, **(step.get("headers") or {}), "Idempotency-Key": str(uuid.uuid4())}
+        # fixture headers도 body/path와 같은 ${var} 치환을 거친다(예: X-User-Id에
+        # 앞 스텝에서 capture한 회원 id를 꽂는 본인확인 시나리오) - HTTP 헤더값은
+        # 항상 문자열이어야 하므로 치환 결과를 str()로 강제한다.
+        fixture_headers = _substitute(step.get("headers"), vars) or {}
+        fixture_headers = {k: str(v) for k, v in fixture_headers.items()}
+        headers = {**_SMOKE_HEADERS, **fixture_headers, "Idempotency-Key": str(uuid.uuid4())}
         expect = step.get("expect", [200, 201])
         expect = [expect] if isinstance(expect, int) else list(expect)
 
@@ -777,6 +787,11 @@ if __name__ == "__main__":
     assert _looks_like_bug('{"detail":"buyerId는 필수입니다"}') is False
     assert _looks_like_bug('{"detail":"bad SQL grammar [SELECT ...]"}') is True
     assert _looks_like_bug('{"detail":"java.lang.NullPointerException"}') is True
+    # 정상적인 도메인 거부 메시지가 "does not exist" 문구를 써도(예: "postId
+    # does not exist") 오탐하면 안 된다 - 실제 SQL 스키마 에러("relation ...
+    # does not exist")만 잡아야 한다(2026-08-06 커뮤니티 게시판 도메인 실측).
+    assert _looks_like_bug('{"detail":"postId does not exist"}') is False
+    assert _looks_like_bug('relation "post" does not exist') is True
 
     # 검증용 postgres DB는 사람 로컬 개발 DB(_POSTGRES_URL, doc)와 절대 같은 이름이면
     # 안 된다 - 이름이 같아지면 격리가 무의미해진다.
