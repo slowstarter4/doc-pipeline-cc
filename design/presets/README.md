@@ -33,6 +33,10 @@ DESIGN_TARGET=nocturne      # design/presets/nocturne.md 를 읽는다
   주홍 accent). 커머스 운영 백오피스용 — 상태 배지 6종·데이터 테이블·금액 표기 레시피
   포함. 출처: claude.ai/design "Modernist", 원본은 `design/sources/claude-design/modernist/`.
 - `light-indigo.md` — 라이트·인디고. 레시피 확장 시점의 기본 톤.
+- `modern-minimal.md` — 라이트·모노톤·그림자 없음·넉넉한 여백(Linear/Vercel류
+  절제된 프로덕트 UI). 강조색은 accent(#171717, 거의 검정) 하나뿐. 파이프라인
+  자체 제작(외부 디자인 도구 출처 없음) - 사람이 "모던 미니멀" 요청으로 직접
+  작성했다.
 
 ### 소스에 없어서 보강한 값
 
