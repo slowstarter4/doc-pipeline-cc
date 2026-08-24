@@ -37,35 +37,6 @@
 | 백엔드/프론트 레지스트리 (파이썬 딕셔너리) | 스택별 `.claude/skills/gen-backend-<stack>/` 폴더 존재가 곧 등록 | 디자인 프리셋 스위처와 같은 "폴더 훑기" 패턴 |
 | Claude Design 연동 (파일 경유 pull) | `DesignSync` 도구를 세션에서 직접 호출 | 브릿지 단계 제거 |
 
-## 레포 구조
-
-```
-doc-pipeline-cc/
-├── CLAUDE.md
-├── .claude/
-│   ├── skills/
-│   │   ├── build-app/              최상위 오케스트레이터 (/build-app <plan.md>)
-│   │   ├── gen-docs/               요구사항~API명세 (+원본 plan.md 항상 동봉)
-│   │   ├── gen-backend-<stack>/    스택별 도메인 조각 생성 지시 + references/gotchas.md
-│   │   ├── gen-frontend-<variant>/ 프론트 스택별 생성 지시
-│   │   ├── verify-backend/         기동+스모크+계약테스트
-│   │   └── verify-frontend/        정적 계약검사(경로·wrapper key)
-│   └── agents/
-│       └── backend-slice-writer.md 도메인 조각 하나를 맡는 서브에이전트 정의
-├── scripts/                        결정적 변환 (LLM 미사용)
-│   ├── schema_ddl.py               ERD → CREATE TABLE (SQL 예약어 테이블명 처리 포함)
-│   ├── openapi_spec.py             api_spec → OpenAPI 3.0
-│   └── endpoint_groups.py          API 명세를 도메인 조각으로 분류
-├── design/
-│   ├── design_system.md            정본 (토큰+컴포넌트 레시피만, 원본 HTML 안 실음)
-│   ├── presets/                    DESIGN_TARGET 스위처용 프리셋들
-│   └── reference/                  출처 보존용, 프롬프트엔 안 실림
-├── db/
-│   └── docker-compose.yml          postgres:16, 사람이 직접 기동
-├── examples/                       샘플 기획문서 (commerce_qwen_plan.md 등)
-└── generated/                      gitignore, 빌드 산출물
-```
-
 ## 핵심 설계 규칙
 
 1. **결정적으로 할 수 있는 변환은 서브에이전트(LLM)를 안 쓴다.** `scripts/`의
